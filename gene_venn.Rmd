@@ -1,0 +1,51 @@
+---
+title: "venn"
+output: html_document
+date: "2024-03-22"
+---
+
+Create Venn Diagram
+```{r}
+setwd("/Users/mary/Documents/research/exps/exp060_chaitanya/")
+#here::set_here("/Users/mary/Documents/research/exps/exp060_chaitanya/")
+library(here)
+
+# Load the VennDiagram library
+library(ggvenn)
+
+# Function to read gene names from file
+gene_names_up <- function(filename) {
+  data <- read.table(filename, header = TRUE, stringsAsFactors = FALSE, sep="\t")
+  up_rows <- data[data$BacWeightedZ_meta > 0, ]
+  gene_names <- up_rows[, 1]
+  return(gene_names)
+}
+gene_names_down <- function(filename) {
+  data <- read.table(filename, header = TRUE, stringsAsFactors = FALSE, sep="\t")
+  down_rows <- data[data$BacWeightedZ_meta < 0, ]
+  gene_names <- down_rows[, 1]
+  return(gene_names)
+}
+
+# File names 
+files <- c(here("res/2024/data/bacon_meta_DGE_pooled_cc.txt"),
+           here("res/2024/data/bacon_meta_limma_pooled_sensitivity.txt"),
+           here("res/2024/data/bacon_meta_DGE_fem_cc.txt"))
+
+# Read gene names from files
+gene_sets_up <- lapply(files, gene_names_up)
+gene_sets_down <- lapply(files, gene_names_down)
+names(gene_sets_up) <- c("Sex-pooled","+BMI-adjusted","Females only")
+names(gene_sets_down) <- c("Sex-pooled","+BMI-adjusted","Females only")
+
+# Create Venn diagram
+# Red up
+venn_up <- ggvenn(gene_sets_up, show_elements = T, label_sep = "\n", text_size=3, fill_color=c("#CC0000","#CC0000","#CC0000")) # c("#FF3333","#CC0000","#FF9999")
+print(venn_up)
+ggsave("/Users/mary/Documents/research/exps/exp060_chaitanya/pics/venn_up.pdf",width=6, height=6)
+
+# Blue down
+venn_down <- ggvenn(gene_sets_down, show_elements = T, label_sep = "\n",text_size=1, fill_color=c("#007ACC","#007ACC","#007ACC")) 
+print(venn_down)
+ggsave("/Users/mary/Documents/research/exps/exp060_chaitanya/pics/venn_down.pdf",width=6, height=6)
+```
