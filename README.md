@@ -8,6 +8,9 @@ Authors: Chaitanya Erady, Richard A.I. Bethlehem, Ed Bullmore, Mary-Ellen Lynall
 
 ## Files:
 
+#### compare_DGE_with_proteome.Rmd 
+Compares mega-analytic DGE results to differential protein expression from Daskalakis 2024 _Science 384:eadh3707_
+
 #### plot_trynka_enrichment.Rmd
 Makes T cell activation enrichment plot, Figure 2D
 
