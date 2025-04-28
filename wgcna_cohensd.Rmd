@@ -1,0 +1,137 @@
+---
+title: "Plots for cellular processes permutation results"
+output: html_document
+---
+
+#
+```{r}
+#Load libraries
+library(dplyr)
+library(tibble)
+library(tidyr)
+library(reshape2)
+library(ggplot2)
+library(tidyverse)
+
+setwd("/Users/mary/Documents/research/exps/exp060_chaitanya/")
+#here::set_here("/Users/mary/Documents/research/exps/exp060_chaitanya/")
+library(here)
+
+```
+
+```{r}
+# Female separate meta-analysed result plot
+
+# Load overall weighted z results
+female_wz <- read_tsv(here("res/2024/data/WGCNA_wZ_scores_female_t_test.txt"))
+  
+# Load individual dataset results
+female_perdataset <- read_tsv(here("res/2024/data/Cohens_D_individual_dataset_female_consensus_modules_ttest.txt"))
+
+order <- female_wz %>% arrange(fdr) %>% pull(modules)
+barend <- max(abs(range(female_perdataset$cohens_d)))
+
+female_perdataset$sig <- factor(ifelse(female_perdataset$p.adj<0.05, "FDR<0.05","Not sig"), levels=c("Not sig","FDR<0.05"), ordered=T)
+
+female_perdataset %>% 
+  ggplot(aes(x = dataset, 
+             y = factor(modules, levels = order), 
+             fill = as.numeric(cohens_d), size = sig)) + 
+  scale_y_discrete(limits = rev) + 
+  geom_point(shape = 22) + theme_minimal() + 
+  theme(strip.background = element_rect(fill = "black"), 
+        strip.text = element_text(color =  "white", face = "bold"), 
+        plot.title = element_text(hjust = 0.5),
+        axis.text.x = element_text(angle=45, hjust=1, size=12)) + 
+    scale_size_manual(limits=c("Not sig","FDR<0.05"), values=c(3,7,9)) +
+  scale_fill_gradientn(colours = c("steelblue4", "steelblue2", "white", "red2", "red4"),
+                       limits = c(-barend, barend), values=c(0, 0.4, 0.5, -0.6, 1)) + 
+  xlab("") + ylab("") + labs(fill = "Cohen's d", size = "Significance") 
+ggsave("wgcna_modules_female_perdataset.pdf", path=here("pics/"), width = 3, height = 4) 
+```
+
+```{r}
+# Weighted z female to accompany above plot (same scales)
+
+female_wz$sig <- factor(ifelse(female_wz$fdr<0.05, "FDR<0.05","Not sig"), levels=c("Not sig","FDR<0.05"), ordered=T)
+female_wz$dataset <- "meta-analysis"
+
+female_wz %>% 
+  ggplot(aes(x = dataset, 
+             y = factor(modules, levels = order), 
+             fill = as.numeric(weighted_mean_cohens_d), size = sig)) + 
+  scale_y_discrete(limits = rev) + 
+  geom_point(shape = 22) + theme_minimal() + 
+  theme(strip.background = element_rect(fill = "black"), 
+        strip.text = element_text(color =  "white", face = "bold"), 
+        plot.title = element_text(hjust = 0.5),
+        axis.text.x = element_text(angle=45, hjust=1, size=12)) + 
+    scale_size_manual(limits=c("Not sig","FDR<0.05"), values=c(3,7,9)) +
+  scale_fill_gradientn(colours = c("steelblue4", "steelblue2", "white", "red2", "red4"),
+                       limits = c(-barend, barend), values=c(0, 0.4, 0.5, -0.6, 1)) + 
+  xlab("") + ylab("") + labs(fill = "Cohen's d", size = "Significance") 
+ggsave("wgcna_modules_female_overallwz.pdf", path=here("pics/"), width = 2.5, height = 4) 
+```
+
+
+Now males
+
+```{r}
+# Male separate meta-analysed result plot
+
+male_wz <- read_tsv(here("res/2024/data/WGCNA_wZ_scores_male_t_test.txt"))
+  
+# Load individual dataset results
+male_perdataset <- read_tsv(here("res/2024/data/Cohens_D_individual_dataset_male_consensus_modules_ttest.txt"))
+
+order <- male_wz %>% arrange(fdr) %>% pull(modules)
+barend <- max(abs(range(male_perdataset$cohens_d)))
+
+male_perdataset$sig <- factor(ifelse(male_perdataset$p.adj<0.05, "FDR<0.05","Not sig"), levels=c("Not sig","FDR<0.05"), ordered=T)
+
+male_perdataset %>% 
+  ggplot(aes(x = dataset, 
+             y = factor(modules, levels = order), 
+             fill = as.numeric(cohens_d), size = sig)) + 
+  scale_y_discrete(limits = rev) + 
+  geom_point(shape = 22) + theme_minimal() + 
+  theme(strip.background = element_rect(fill = "black"), 
+        strip.text = element_text(color =  "white", face = "bold"), 
+        plot.title = element_text(hjust = 0.5),
+        axis.text.x = element_text(angle=45, hjust=1, size=12)) + 
+    scale_size_manual(limits=c("Not sig","FDR<0.05"), values=c(3,7,9)) +
+  scale_fill_gradientn(colours = c("steelblue4", "steelblue2", "white", "red2", "red4"),
+                       limits = c(-barend, barend), values=c(0, 0.4, 0.5, -0.6, 1)) + 
+  xlab("") + ylab("") + labs(fill = "Cohen's d", size = "Significance") 
+ggsave("wgcna_modules_male_perdataset.pdf", path=here("pics/"), width = 3, height = 4) 
+```
+
+```{r}
+# Weighted z male to accompany above plot (same scales)
+
+male_wz$sig <- factor(ifelse(male_wz$fdr<0.05, "FDR<0.05","Not sig"), levels=c("Not sig","FDR<0.05"), ordered=T)
+male_wz$dataset <- "Meta-analysis"
+
+male_wz %>% 
+  ggplot(aes(x = dataset, 
+             y = factor(modules, levels = order), 
+             fill = as.numeric(weighted_mean_cohens_d), size = sig)) + 
+  scale_y_discrete(limits = rev) + 
+  geom_point(shape = 22) + theme_minimal() + 
+  theme(strip.background = element_rect(fill = "black"), 
+        strip.text = element_text(color =  "white", face = "bold"), 
+        plot.title = element_text(hjust = 0.5),
+        axis.text.x = element_text(angle=45, hjust=1, size=12)) + 
+    scale_size_manual(limits=c("Not sig","FDR<0.05"), values=c(3,7,9)) +
+  scale_fill_gradientn(colours = c("steelblue4", "steelblue2", "white", "red2", "red4"),
+                       limits = c(-barend, barend), values=c(0, 0.4, 0.5, -0.6, 1)) + 
+  xlab("") + ylab("") + labs(fill = "Cohen's d", size = "Significance") 
+ggsave("wgcna_modules_male_overallwz.pdf", path=here("pics/"), width = 2.5, height = 4) 
+```
+
+```{r}
+
+sessionInfo()
+
+```
+
