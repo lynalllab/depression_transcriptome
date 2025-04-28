@@ -8,5 +8,8 @@ Authors: Chaitanya Erady, Richard A.I. Bethlehem, Ed Bullmore, Mary-Ellen Lynall
 
 ## Files:
 
-### wgcna_cohensd.Rmd
-Makes WGCNA meta-analysis Figures 3C,D 
+#### plot_trynka_enrichment.Rmd
+Makes T cell activation enrichment plot, Figure 2D
+
+#### wgcna_cohensd.Rmd
+Makes WGCNA meta-analysis plots, Figures 3C,D 
