@@ -8,3 +8,5 @@ Authors: Chaitanya Erady, Richard A.I. Bethlehem, Ed Bullmore, Mary-Ellen Lynall
 
 ## Files:
 
+### wgcna_cohensd.Rmd
+Makes WGCNA meta-analysis Figures 3C,D 
