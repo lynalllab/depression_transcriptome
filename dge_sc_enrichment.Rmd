@@ -1,0 +1,402 @@
+---
+title: "single cell enrichment / LRCell"
+output: html_document
+date: "2024-03-22"
+---
+
+Estimating cellular origin of transcriptomic differences
+
+```{r}
+
+library(tidyverse)
+library(magrittr)
+library(readxl)
+
+setwd("/Users/mary/Documents/research/exps/exp060_chaitanya/")
+#here::set_here("/Users/mary/Documents/research/exps/exp060_chaitanya/")
+library(here)
+
+```
+
+LR cell to identify cellular source of GEx changes
+```{r}
+library(readxl)
+library(LRcell)
+
+dge_pooled_all <- read_excel(path="/Users/mary/Documents/research/exps/exp060_chaitanya/res/2024/data/DGE_GSEA_MDD_CNT_bacon_adjusted_results_cell_corrected_reactome.xlsx", sheet="pooled_DGE_cc_common")
+
+pvals <- dge_pooled_all$pvalue.pval_BacWeightedZ
+names(pvals) <- dge_pooled_all$gene_name
+lrres <- LRcell(gene.p = pvals,
+              region = "PBMC",
+              species = "human",
+              method = "LiR") 
+res <- lrres$PBMC
+res$cell_type <- res$ID # Can adjust to prettify names for plotting
+res_readable <- subset(res, select=-lead_genes)
+print(head(res_readable[order(res_readable$p.value), ],10))
+```
+
+          ID genes_num        coef      p.value          FDR cell_type
+26  Platelet        88 0.046966787 5.703369e-08 3.250920e-06  Platelet
+38 CD8 TEM_5        88 0.006426985 6.177082e-05 1.760468e-03 CD8 TEM_5
+5       NK_2        91 0.007489197 1.052535e-04 1.999817e-03      NK_2
+35   CD4 CTL        90 0.004335692 2.638392e-04 3.759708e-03   CD4 CTL
+31     gdT_2        87 0.005762466 4.033739e-04 4.519560e-03     gdT_2
+24      NK_1        90 0.005841153 4.757432e-04 4.519560e-03      NK_1
+44      NK_3        90 0.005224089 1.107063e-03 9.014652e-03      NK_3
+27 CD8 TEM_4        88 0.004740725 1.459418e-03 1.039836e-02 CD8 TEM_4
+14     gdT_1        88 0.003531106 3.582047e-03 2.268630e-02     gdT_1
+8  CD16 Mono        89 0.007265584 5.506535e-03 3.138725e-02 CD16 Mono
+
+Make the plotting-friendly dictionary
+```{r}
+# Define the list of immune cell subsets
+cell_types <- c("CD4 Naive", "CD4 TCM_1", "CD14 Mono", "CD4 TCM_3", "NK_2", 
+                "CD8 TEM_2", "CD8 TCM_1", "CD16 Mono", "CD8 Naive", "B intermediate kappa", 
+                "B memory kappa", "MAIT", "CD8 TEM_1", "gdT_1", "B naive kappa", 
+                "Treg Naive", "CD4 TEM_1", "Treg Memory", "CD4 TEM_3", "dnT_2", 
+                "B naive lambda", "gdT_3", "CD8 TCM_2", "NK_1", "HSPC", "Platelet", 
+                "CD8 TEM_4", "NK_4", "cDC2_2", "CD8 Naive_2", "gdT_2", "cDC2_1", 
+                "NK_CD56bright", "CD8 TEM_3", "CD4 CTL", "pDC", "CD4 TCM_2", 
+                "CD8 TEM_5", "CD4 Proliferating", "CD8 TCM_3", "CD4 TEM_2", "Eryth", 
+                "dnT_1", "NK_3", "Plasmablast", "Plasma", "CD8 TEM_6", "cDC1", 
+                "gdT_4", "B intermediate lambda", "B memory lambda", "NK Proliferating", 
+                "CD4 TEM_4", "ILC", "ASDC_mDC", "CD8 Proliferating", "ASDC_pDC")
+
+# Create a function to classify the cell types into major immune subsets
+classify_major_subset <- function(cell_type) {
+  if (grepl("^CD4", cell_type)) {
+    return("CD4 T cells")
+  } else if (grepl("^CD8", cell_type)) {
+    return("CD8 T cells")
+  } else if (grepl("^B", cell_type)) {
+    return("B cells")
+  } else if (grepl("^gdT", cell_type)) {
+    return("gamma delta T cells")
+  } else if (grepl("^Treg", cell_type)) {
+    return("Treg cells")
+  } else if (grepl("Mono", cell_type)) {
+    return("Monocytes")
+  } else if (grepl("^Plasma", cell_type) || grepl("^Plasmablast", cell_type)) {
+    return("Plasma cells")
+  } else if (grepl("^pDC", cell_type) || grepl("^ASDC_pDC", cell_type) || grepl("^cDC", cell_type)) {
+    return("DCs")
+  } else if (grepl("^Eryth", cell_type)) {
+    return("Erythroid cells")
+  } else if (grepl("^HSPC", cell_type)) {
+    return("HSPCs")
+  } else if (grepl("^Platelet", cell_type)) {
+    return("Platelets")
+  } else if (grepl("^NK", cell_type) || grepl("^ILC", cell_type)) {
+    return("Innate lymphoid / NK cells")
+  } else {
+    return("Other")
+  }
+}
+
+# Apply the function to create a major immune subset classification
+major_subset <- sapply(cell_types, classify_major_subset)
+immune_df <- data.frame(Cell_Type = cell_types, Major_Immune_Subset = major_subset)
+print(immune_df)
+
+# Adjust manhattan function to incorporate cell_group
+width=9
+plot_manhattan_enrich_lynall <- function (lrcell_res, sig.cutoff = 0.05, label.topn = 5) 
+{
+  # Bright colours
+  bright_colors <- c("#1B9E77", "#D95F02", "#7570B3", "#E7298A", "#66A61E", 
+                        "#E6AB02", "#A6761D", "#666666", "#E41A1C", "#377EB8", 
+                        "#4DAF4A", "#984EA3", "#FF7F00")
+
+
+  # Reorder cell groups
+  desired_order <- c("Monocytes","DCs","Innate lymphoid / NK cells","CD4 T cells","CD8 T cells", "Treg cells","gamma delta T cells","B cells","Plasma cells", "HSPCs","Other","Erythroid cells","Platelets")
+  lrcell_res$cell_group <- factor(lrcell_res$cell_group, 
+                                levels = desired_order, 
+                                ordered = TRUE)
+  lr_tmp <- lrcell_res %>% dplyr::group_by(.data$cell_group) %>% 
+        dplyr::arrange(.data$cell_group, .data$cell_type)
+    lr_tmp$pos <- as.numeric(rownames(lr_tmp))
+    axisdf <- lr_tmp %>% dplyr::group_by(.data$cell_type) %>% 
+        dplyr::summarize(center = (max(.data$pos) + min(.data$pos))/2)
+    thres_topn <- ifelse(nrow(lr_tmp) > label.topn, label.topn, 
+        nrow(lr_tmp))
+    repel_thres <- sort(lr_tmp$FDR)[thres_topn]
+    g <- ggplot2::ggplot(lr_tmp, aes(x = .data$pos, y = -log10(.data$FDR))) + 
+        ggplot2::geom_point(aes(color = as.factor(.data$cell_group)), # line changed
+            alpha = 0.8, size = 2) + ggplot2::geom_hline(yintercept = -log10(sig.cutoff), 
+        linetype = "dashed", color = "red") + ggrepel::geom_text_repel(aes(label = ifelse(.data$FDR <= 
+        repel_thres & .data$FDR <= sig.cutoff, as.character(.data$ID), 
+        "")), force = 5) + ggplot2::scale_x_continuous(label = axisdf$cell_type, 
+        breaks = axisdf$center) + ggplot2::labs(x = "clusters") + 
+        ggplot2::theme_bw() + ggplot2::theme(axis.text.x = element_text(face = "bold", 
+        size = 12, angle = 45, hjust = 1), panel.grid.minor.x = element_blank()) + ggplot2::scale_color_manual(values = bright_colors)
+    g
+}
+
+```
+
+Plot enriched cell types
+```{r}
+
+res$cell_group <- immune_df$Major_Immune_Subset[match(res$cell_type, immune_df$Cell_Type)]
+p <- plot_manhattan_enrich_lynall(res, sig.cutoff = .05, label.topn = 9)
+p
+ggsave(filename = paste0("mdd_dge_pooled_lrcell.pdf"), path=here("pics"), width=width, height=4)
+
+# What genes are driving this?
+look <- res %>% dplyr::filter(FDR<0.05) %>% dplyr::arrange(p.value) %>% select(c("cell_type","FDR","lead_genes"))
+# View(look)
+# CD8 TEM_5 enrichment driven by APOBEC3G, ARL4C, CD247, CD7, CD99, CLEC2D, GZMH, HOPX, IL2RG, LGALS1, LYAR, PATL2, PPP2R5C, SYNE1, SYTL2, YWHAQ 
+# i.e. not NOT CDITP, the DGE gene
+print(res %>% dplyr::filter(FDR<0.05) %>% dplyr::arrange(p.value) %>% select(c("cell_type","FDR","lead_genes")) %>% head(3))
+# NK2 enrichment driven by APOBEC3G, ARL4C, CD247, CD38, CD7, CHST2, GZMH, HOPX, IL2RG, PTPN12, RAMP1, SYNE1, TYROBP
+
+# NB. NK2 is CD56dim - "The CD56dim subset is considered to be the more cytotoxic population and has increased levels of perforin, granzymes, and cytolytic granules"
+
+# Look closely at genes for CD8 TEM5
+checking <- res[res$cell_type=="CD8 TEM_5","lead_genes"] %>% strsplit(.,", ") %>% unlist()
+print(dge_pooled_all %>% filter(gene_name %in% checking) %>% select("gene_name","pvalue.BacWeightedZ_adj_pval","BacWeightedZ_meta") %>% arrange(pvalue.BacWeightedZ_adj_pval))
+
+checking_nk <- res[res$cell_type=="NK_2","lead_genes"] %>% strsplit(.,", ") %>% unlist()
+print(dge_pooled_all %>% filter(gene_name %in% checking_nk) %>% select("gene_name","pvalue.BacWeightedZ_adj_pval","BacWeightedZ_meta") %>% arrange(pvalue.BacWeightedZ_adj_pval))
+
+print(intersect(checking, checking_nk))
+# "APOBEC3G" "ARL4C"    "CD247"    "CD7"      "GZMH"     "HOPX"     "IL2RG"    "SYNE1" 
+```
+
+LR cell for sexes separately
+```{r}
+# Females
+dge_pooled_all <- read_excel(path="/Users/mary/Documents/research/exps/exp060_chaitanya/res/2024/data/DGE_GSEA_MDD_CNT_bacon_adjusted_results_cell_corrected_reactome.xlsx", sheet="female_DGE_cc_common")
+pvals <- dge_pooled_all$pvalue.pval_BacWeightedZ
+names(pvals) <- dge_pooled_all$gene_name
+lrres <- LRcell(gene.p = pvals,
+              region = "PBMC",
+              species = "human",
+              method = "LiR") # TOTHINK - how choose here?
+res <- lrres$PBMC
+res$cell_type <- res$ID # Can adjust to prettify names for plotting
+res_readable <- subset(res, select=-lead_genes)
+print(head(res_readable[order(res_readable$p.value), ],10))
+res$cell_group <- immune_df$Major_Immune_Subset[match(res$cell_type, immune_df$Cell_Type)]
+p <- plot_manhattan_enrich_lynall(res, sig.cutoff = .05, label.topn = 9)
+ggsave(filename = paste0("mdd_dge_pooled_lrcell_females.pdf"), path=here("pics"), width=width, height=4)
+
+# And males
+dge_pooled_all <- read_excel(path="/Users/mary/Documents/research/exps/exp060_chaitanya/res/2024/data/DGE_GSEA_MDD_CNT_bacon_adjusted_results_cell_corrected_reactome.xlsx", sheet="male_DGE_cc_common")
+pvals <- dge_pooled_all$pvalue.pval_BacWeightedZ
+names(pvals) <- dge_pooled_all$gene_name
+lrres <- LRcell(gene.p = pvals,
+              region = "PBMC",
+              species = "human",
+              method = "LiR") # TOTHINK - how choose here?
+res <- lrres$PBMC
+res$cell_type <- res$ID # Can adjust to prettify names for plotting
+res_readable <- subset(res, select=-lead_genes)
+print(head(res_readable[order(res_readable$p.value), ],10))
+res$cell_group <- immune_df$Major_Immune_Subset[match(res$cell_type, immune_df$Cell_Type)]
+p <- plot_manhattan_enrich_lynall(res, sig.cutoff = .05, label.topn = 9)
+ggsave(filename = paste0("mdd_dge_pooled_lrcell_males.pdf"), path=here("pics"), width=width, height=4)
+
+```
+
+FEMALES:
+               ID genes_num         coef      p.value          FDR      cell_type
+26       Platelet        88  0.041588487 2.150793e-09 1.225952e-07       Platelet
+42          Eryth        90  0.008104875 2.726625e-03 7.770882e-02          Eryth
+43          dnT_1        83  0.001705921 1.427147e-02 2.711579e-01          dnT_1
+38      CD8 TEM_5        88  0.002923224 2.330280e-02 3.320649e-01      CD8 TEM_5
+35        CD4 CTL        90  0.001937200 4.239969e-02 4.411790e-01        CD4 CTL
+21 B naive lambda        87 -0.005208604 4.643990e-02 4.411790e-01 B naive lambda
+31          gdT_2        87  0.002345253 7.302319e-02 5.809709e-01          gdT_2
+16     Treg Naive        80  0.001246132 1.001165e-01 5.809709e-01     Treg Naive
+5            NK_2        91  0.002514705 1.049806e-01 5.809709e-01           NK_2
+15  B naive kappa        91 -0.004025967 1.347719e-01 5.809709e-01  B naive kappa
+
+MALES:
+          ID genes_num        coef      p.value        FDR cell_type
+5       NK_2        91 0.009228131 0.0004310398 0.02456927      NK_2
+31     gdT_2        87 0.006377111 0.0039244726 0.08181827     gdT_2
+44      NK_3        90 0.006206562 0.0043062250 0.08181827      NK_3
+24      NK_1        90 0.006192087 0.0063619739 0.09065813      NK_1
+38 CD8 TEM_5        88 0.005723340 0.0085980299 0.09801754 CD8 TEM_5
+27 CD8 TEM_4        88 0.005181632 0.0103896329 0.09870151 CD8 TEM_4
+9  CD8 Naive        89 0.003746025 0.0168180671 0.13694712 CD8 Naive
+28      NK_4        92 0.005594833 0.0227346476 0.16198436      NK_4
+19 CD4 TEM_3        88 0.002583375 0.0411672827 0.24616640 CD4 TEM_3
+7  CD8 TCM_1        87 0.002660603 0.0431870870 0.24616640 CD8 TCM_1
+
+Sensitivity analysis: LR cell on BMI-corrected results
+```{r}
+dge_pooled_all <- read_excel(path="/Users/mary/Documents/research/exps/exp060_chaitanya/res/2024/data/DGE_GSEA_MDD_CNT_bacon_adjusted_results_sensitivity_reactome.xlsx", sheet="pooled_DGE_cc_BMI_common")
+
+pvals <- dge_pooled_all$pvalue.pval_BacWeightedZ
+names(pvals) <- dge_pooled_all$gene_name
+
+lrres <- LRcell(gene.p = pvals,
+              region = "PBMC",
+              species = "human",
+              method = "LiR") 
+
+res <- lrres$PBMC
+res$cell_type <- res$ID # Can adjust to prettify names for plotting
+res_readable <- subset(res, select=-lead_genes)
+print(head(res_readable[order(res_readable$p.value), ],10))
+
+# Plot
+res$cell_group <- immune_df$Major_Immune_Subset[match(res$cell_type, immune_df$Cell_Type)]
+p <- plot_manhattan_enrich_lynall(res, sig.cutoff = .05, label.topn = 9)
+ggsave(filename = paste0("mdd_dge_pooled_lrcell_bmi.pdf"), path=here("pics"), width=width, height=4)
+
+# What genes are driving this?
+look <- res %>% dplyr::filter(FDR<0.05) %>% dplyr::arrange(p.value) %>% select(c("cell_type","FDR","lead_genes"))
+head(look)
+
+# Treg memory was: BIRC3, BTF3, BTG1, CD2, GCNT4, GIMAP7, IL2RA, ISG20, KLF2, MALAT1, MPHOSPH8, NACA, PBXIP1, PIK3IP1, PTPRC, RTKN2, S100A10, STK4, SYNE2, TMA7, UBA52
+```
+
+BMI-corrected
+            ID genes_num        coef      p.value          FDR   cell_type
+26    Platelet        89 0.082626481 1.317677e-30 7.510759e-29    Platelet
+42       Eryth        90 0.015744312 1.278056e-08 3.642461e-07       Eryth
+18 Treg Memory        88 0.005552149 8.692189e-07 1.651516e-05 Treg Memory
+22       gdT_3        88 0.005715804 3.373476e-06 4.807203e-05       gdT_3
+38   CD8 TEM_5        91 0.005496530 5.982420e-05 6.819959e-04   CD8 TEM_5
+24        NK_1        93 0.005731721 1.332061e-04 1.265458e-03        NK_1
+31       gdT_2        91 0.005548633 2.277531e-04 1.854561e-03       gdT_2
+5         NK_2        94 0.005790472 3.310909e-04 2.359023e-03        NK_2
+27   CD8 TEM_4        90 0.004301236 5.013333e-04 3.175111e-03   CD8 TEM_4
+44        NK_3        93 0.004357413 1.443511e-03 8.228015e-03        NK_3
+
+Sex-split sensitivity
+```{r}
+# Females
+dge <- read_excel(path="/Users/mary/Documents/research/exps/exp060_chaitanya/res/2024/data/DGE_GSEA_MDD_CNT_bacon_adjusted_results_sensitivity_reactome.xlsx", sheet="female_DGE_cc_BMI_common")
+
+pvals <- dge$pvalue.pval_BacWeightedZ
+names(pvals) <- dge$gene_name
+lrres <- LRcell(gene.p = pvals,
+              region = "PBMC",
+              species = "human",
+              method = "LiR") # TOTHINK - how choose here?
+res <- lrres$PBMC
+res$cell_type <- res$ID # Can adjust to prettify names for plotting
+res_readable <- subset(res, select=-lead_genes)
+print(head(res_readable[order(res_readable$p.value), ],10))
+res$cell_group <- immune_df$Major_Immune_Subset[match(res$cell_type, immune_df$Cell_Type)]
+p <- plot_manhattan_enrich_lynall(res, sig.cutoff = .05, label.topn = 9)
+ggsave(filename = paste0("mdd_dge_pooled_lrcell_females_bmi.pdf"), path=here("pics"), width=width, height=4)
+
+# And males
+dge <- read_excel(path="/Users/mary/Documents/research/exps/exp060_chaitanya/res/2024/data/DGE_GSEA_MDD_CNT_bacon_adjusted_results_sensitivity_reactome.xlsx", sheet="male_DGE_cc_BMI_common")
+pvals <- dge$pvalue.pval_BacWeightedZ
+names(pvals) <- dge$gene_name
+lrres <- LRcell(gene.p = pvals,
+              region = "PBMC",
+              species = "human",
+              method = "LiR") 
+res <- lrres$PBMC
+res$cell_type <- res$ID 
+res_readable <- subset(res, select=-lead_genes)
+print(head(res_readable[order(res_readable$p.value), ],10))
+res$cell_group <- immune_df$Major_Immune_Subset[match(res$cell_type, immune_df$Cell_Type)]
+p <- plot_manhattan_enrich_lynall(res, sig.cutoff = .05, label.topn = 9)
+ggsave(filename = paste0("mdd_dge_pooled_lrcell_males_bmi.pdf"), path=here("pics"), width=width, height=4)
+
+```
+
+
+LRCell on the platelet-corrected results
+```{r}
+dge <- read_excel(path="/Users/mary/Documents/research/exps/exp060_chaitanya/res/2024/data/DGE_GSEA_platelet_and_cell_corrected.xlsx", sheet="pooled_DGE_cc_platelet")
+
+pvals <- dge$pvalue.pval_BacWeightedZ
+names(pvals) <- dge$gene_name
+lrres <- LRcell(gene.p = pvals,
+              region = "PBMC",
+              species = "human",
+              method = "LiR") 
+res <- lrres$PBMC
+res$cell_type <- res$ID # Can adjust to prettify names for plotting
+res_readable <- subset(res, select=-lead_genes)
+print(head(res_readable[order(res_readable$p.value), ],15))
+# Plot
+res$cell_group <- immune_df$Major_Immune_Subset[match(res$cell_type, immune_df$Cell_Type)]
+p <- plot_manhattan_enrich_lynall(res, sig.cutoff = .05, label.topn = 9)
+ggsave(filename = paste0("mdd_dge_platelet_lrcell_pooled.pdf"), path=here("pics"), width=width, height=4)
+
+# Females - nil sig
+dge <- read_excel(path="/Users/mary/Documents/research/exps/exp060_chaitanya/res/2024/data/DGE_GSEA_platelet_and_cell_corrected.xlsx", sheet="female_DGE_cc_platele")
+pvals <- dge$pvalue.pval_BacWeightedZ
+names(pvals) <- dge$gene_name
+lrres <- LRcell(gene.p = pvals,
+              region = "PBMC",
+              species = "human",
+              method = "LiR") 
+res <- lrres$PBMC
+res$cell_type <- res$ID # Can adjust to prettify names for plotting
+res_readable <- subset(res, select=-lead_genes)
+print(head(res_readable[order(res_readable$p.value), ],10))
+res$cell_group <- immune_df$Major_Immune_Subset[match(res$cell_type, immune_df$Cell_Type)]
+p <- plot_manhattan_enrich_lynall(res, sig.cutoff = .05, label.topn = 9)
+ggsave(filename = paste0("mdd_dge_platelet_lrcell_female.pdf"), path=here("pics"), width=width, height=4)
+
+# And males
+dge <- read_excel(path="/Users/mary/Documents/research/exps/exp060_chaitanya/res/2024/data/DGE_GSEA_platelet_and_cell_corrected.xlsx", sheet="male_DGE_cc_platelet")
+pvals <- dge$pvalue.pval_BacWeightedZ
+names(pvals) <- dge$gene_name
+lrres <- LRcell(gene.p = pvals,
+              region = "PBMC",
+              species = "human",
+              method = "LiR") # TOTHINK - how choose here?
+res <- lrres$PBMC
+res$cell_type <- res$ID # Can adjust to prettify names for plotting
+res_readable <- subset(res, select=-lead_genes)
+print(head(res_readable[order(res_readable$p.value), ],10))
+res$cell_group <- immune_df$Major_Immune_Subset[match(res$cell_type, immune_df$Cell_Type)]
+p <- plot_manhattan_enrich_lynall(res, sig.cutoff = .05, label.topn = 9)
+ggsave(filename = paste0("mdd_dge_platelet_lrcell_male.pdf"), path=here("pics"), width=width, height=4)
+
+```
+
+Pooled-sex, with whole blood models correceted for estimated platelets --> platelets no longer significant
+
+          ID genes_num        coef      p.value         FDR cell_type
+5       NK_2        91 0.008135469 4.100822e-05 0.002337469      NK_2
+44      NK_3        90 0.006084412 2.165426e-04 0.005716582      NK_3
+38 CD8 TEM_5        88 0.005895143 3.473301e-04 0.005716582 CD8 TEM_5
+24      NK_1        90 0.006077253 4.011637e-04 0.005716582      NK_1
+31     gdT_2        87 0.005681852 6.833067e-04 0.007789697     gdT_2
+35   CD4 CTL        90 0.003896375 1.413062e-03 0.013424087   CD4 CTL
+8  CD16 Mono        89 0.008067756 2.691246e-03 0.021914430 CD16 Mono
+28      NK_4        92 0.005319372 4.206710e-03 0.029972809      NK_4
+27 CD8 TEM_4        88 0.004144247 6.757370e-03 0.039001080 CD8 TEM_4
+14     gdT_1        88 0.003367500 6.842295e-03 0.039001080     gdT_1
+26  Platelet        88 0.022709038 1.065229e-02 0.055198249  Platelet
+34 CD8 TEM_3        90 0.003032462 1.776208e-02 0.084369866 CD8 TEM_3
+19 CD4 TEM_3        88 0.002197911 2.168838e-02 0.095095194 CD4 TEM_3
+40 CD8 TCM_3        83 0.002225050 3.186162e-02 0.129722318 CD8 TCM_3
+49     gdT_4        86 0.003005467 3.438126e-02 0.130648786     gdT_4
+
+And what if you don't correct for cellular composition in the meta-analysis? [more similar to how MDD TWAS was performed, as the GTEx QTLs used to build the TWAS were not corrected for cellular composition]
+```{r}
+
+# Females
+dge_pooled_all_nocc <- read_excel(path="/Users/mary/Documents/research/exps/exp060_chaitanya/res/2024/data/DGE_GSEA_MDD_CNT_bacon_adjusted_results_not_cell_corrected_reactome.xlsx", sheet="pooled_DGE_nocc_common")
+pvals <- dge_pooled_all_nocc$pvalue.pval_BacWeightedZ
+names(pvals) <- dge_pooled_all_nocc$gene_name
+lrres <- LRcell(gene.p = pvals,
+              region = "PBMC",
+              species = "human",
+              method = "LiR") # TOTHINK - how choose here?
+res <- lrres$PBMC
+res$cell_type <- res$ID # Can adjust to prettify names for plotting
+res_readable <- subset(res, select=-lead_genes)
+print(head(res_readable[order(res_readable$p.value), ],10))
+res$cell_group <- immune_df$Major_Immune_Subset[match(res$cell_type, immune_df$Cell_Type)]
+p <- plot_manhattan_enrich_lynall(res, sig.cutoff = .05, label.topn = 9)
+ggsave(filename = paste0("mdd_dge_pooled_lrcell_nocc.pdf"), path=here("pics"), width=width, height=4)
+
+```
