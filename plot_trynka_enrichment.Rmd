@@ -1,0 +1,33 @@
+---
+title: "plot trynka GSEA results"
+output: html_document
+date: "2024-08-29"
+---
+```{r}
+setwd("/Users/mary/Documents/research/exps/exp060_chaitanya/")
+library(here)
+library(tidyverse)
+library(magrittr)
+library(readxl)
+```
+
+```{r}
+
+df <- read_excel(here("res/2024/data/GSEA_MDD_CNT_bacon_adjusted_results_cell_corrected_trynka_db.xlsx"), sheet = "GSEA_pooled_DGE_cc_common")
+
+# Pathway names are e.g. lowTCRhighCD28_vs_rest_naive_down
+# Separate the descriptor into new columns
+df <- df %>%
+  separate(ID, into = c("stimulation", "subset", "direction"), sep = "_vs_rest_|_")
+
+# Tile plot; facet by subset (naive vs memory), y-axis as direction, x axis as stimulation. Tile shows NES score; tile size shows p-adjust.
+df$sig <- factor(ifelse(df$p.adjust<0.05, "FDR<0.05", ifelse(df$pvalue<0.05, "raw P<0.05","Not sig")), levels=c("Not sig","raw P<0.05","FDR<0.05"), ordered=T)
+
+library(viridis)
+ggplot(df, aes(x=direction, y=stimulation, fill=NES, size=sig)) +  geom_point(shape=22) + scale_fill_viridis(name = "NES") + scale_size_manual(values=c(1,3,5)) + theme_bw() + theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust=0.5), legend.title = element_text(size=10)) + xlab("") + ylab("") + scale_fill_gradientn(colours = c("steelblue4", "steelblue2", "white", "red2", "red4"),
+                       limits = c(-2, 2), values=c(0, 0.2, 0.5, 0.8, 1)) + facet_grid(cols=vars(subset))
+# + guides(fill=guide_colorbar(reverse=T)) 
+
+ggsave(filename = here("pics/trynka_enrichment.pdf"), width = 4, height=2.3)
+
+```
