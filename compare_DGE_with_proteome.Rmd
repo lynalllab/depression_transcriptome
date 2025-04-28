@@ -1,0 +1,64 @@
+---
+title: "proteome"
+output: html_document
+date: "2024-09-26"
+---
+
+Check for overlap between our FDR<0.05 genes and the MDD proteome from Daskalakis
+S10A in supplemental of psychencode PTSD/MDD science paper
+
+```{r}
+
+setwd("/Users/mary/Documents/research/exps/exp060_chaitanya/")
+here()
+```
+
+```{r}
+
+# Note the Daskalakis lists only show the significant proteomic results
+library(readxl)
+# Resaved manually as xlsx
+file_path <- here("data/public/daskalakis2024_plasma_olink_ukbb_results/adh3707_Suppl. Excel_seq10_v6.xlsx")
+sheets <- readxl::excel_sheets(file_path)
+
+# Use EMR definition of depression
+proteome_res <- read_excel(file_path, sheet = "S10A-4 (EMR)")
+
+```
+
+
+```{r}
+# Which of our genes are represented in this list of 1500 proteins?
+dge_pooled <- read_excel(path="/Users/mary/Documents/research/exps/exp060_chaitanya/res/2024/data/DGE_GSEA_MDD_CNT_bacon_adjusted_results_cell_corrected_reactome.xlsx", sheet="pooled_DGE_cc_common")
+
+# Merge and inspect genes with the same direction of effect in both datasets (raw P<0.05 in transcriptome; FDR<0.05 for proteome)
+library(ggrepel)
+  merged <- merge(subset_rawp, proteome_res, by.x="gene_name", by.y="gene")
+# Find those in same direction
+merged_same_direction <- merged[(merged$BacWeightedZ_meta > 0 & merged$t_stat > 0) | (merged$BacWeightedZ_meta < 0 & merged$t_stat < 0), ]
+p <- ggplot(merged_same_direction, aes(x = BacWeightedZ_meta, y = t_stat)) +
+  geom_point() +
+  geom_text_repel(aes(label = gene_name), vjust = 1, hjust = 1, size = 3) +  # Adds gene name labels
+  theme_bw() +
+  labs(x = "BacWeightedZ_meta", y = "t_stat", colour = "Proteome Significance") +
+  theme(legend.position = "right") + 
+  expand_limits(x=c(-2,3), y=c(-2,8)) + ggtitle(definition)
+print(p)
+
+```
+
+Now list those matching at relaxed P<0.2
+```{r}
+
+dim(dge_pooled %>% filter(pvalue.BacWeightedZ_adj_pval<0.2))
+# 55 genes
+
+# Which have a convergent result in DGE and differential protein expression?
+for (definition in unique(proteome_res$DepressionDef)){
+  print(definition)
+  merged <- merge(dge_pooled %>% filter(pvalue.BacWeightedZ_adj_pval<0.2), proteome_res %>% filter(DepressionDef==definition), by.x="gene_name", by.y="gene")
+# Find those in same direction
+merged_same_direction <- merged[(merged$BacWeightedZ_meta > 0 & merged$t_stat > 0) | (merged$BacWeightedZ_meta < 0 & merged$t_stat < 0), ]
+print(merged_same_direction)
+}
+```
