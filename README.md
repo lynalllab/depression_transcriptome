@@ -14,7 +14,11 @@ Compares mega-analytic DGE results to differential protein expression from Daska
 
 ### Differential transcript usage
 
+
+
 ### Core cellular processes mega-analysis
+
+
 
 ### DGE enrichement and cell origin analyses
 ### dge_sc_enrichment.Rmd
@@ -22,6 +26,8 @@ Performs and plots LR Cell analyses, Figures 2D, S9
 
 #### plot_trynka_enrichment.Rmd
 Makes T cell activation enrichment plot, Figure 2D
+
+
 
 ### WGCNA meta-analysis
 #### wgcna_cohensd.Rmd
