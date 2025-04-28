@@ -9,6 +9,7 @@ Authors: Chaitanya Erady, Richard A.I. Bethlehem, Ed Bullmore, Mary-Ellen Lynall
 ## Files:
 
 ### Differential gene and transcript mega-analyses
+* __gene_venn.Rmd__ Create Venn diagrams, Figure 1A
 * __compare_DGE_with_proteome.Rmd__ Compares mega-analytic DGE results to differential protein expression from Daskalakis 2024 _Science 384:eadh3707_
 
 ### Differential transcript usage
