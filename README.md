@@ -16,12 +16,12 @@ Authors: Chaitanya Erady, Richard A.I. Bethlehem, Ed Bullmore, Mary-Ellen Lynall
 
 
 ### Core cellular processes mega-analysis
-
+* __gene_group_perm_plot.Rmd__ Creates Figure 2C
 
 
 ### DGE enrichement and cell origin analyses
 * __dge_sc_enrichment.Rmd__ Performs and plots LR Cell analyses, Figures 2D, S9
-* __plot_trynka_enrichment.Rmd__ Makes T cell activation enrichment plot, Figure 2D
+* __plot_trynka_enrichment.Rmd__ Makes T cell activation enrichment plot, Figure 2B
 
 
 
