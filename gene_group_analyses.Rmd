@@ -79,8 +79,6 @@ comm_dataset <- rbind(gsea_b_f, gsea_b_m, gsea_l_f, gsea_l_m, gsea_m_f, gsea_m_m
 comm_dataset <- comm_dataset %>% filter(is.na(gene_name) == F)
 ```
 
-#After every chunk of code run appropriate wilcoxon rank sum test (1 for single variable e.g. MT and 2 for multiple categories e.g. histone: H1, H2A...)
-
 
 MT genes selected based on chr = MT
 going with gene name here as no gene id available for microarray data
@@ -163,95 +161,6 @@ etc_resp <- read.table("../gsva_pathways.txt", header = T, stringsAsFactors = F,
 
 mt_info_for_plot <- comm_dataset %>% merge(., etc_resp, by.x = "gene_name", by.y = "gene", all.x = T) %>% filter(is.na(pathway) == F) %>% dplyr::select(gene_name, logFC, logCPM, Sex, dataset, Class) %>% melt(., id.vars = c("gene_name", "Sex", "dataset", "Class")) %>% mutate(group = "OXPHOS")
 ```
-
-
-```{r wilcoxon_rank_sum_test_1}
-list_vals <- c()
-
-names <- unique(mt_info_for_plot$dataset)
-data = mt_info_for_plot
-
-for(i in names){
-    temp <- data
-    temp <- temp %>% filter(variable == "logFC" & dataset == i)
-    res <- wilcox.test(value~Sex, data = temp, conf.int = T)
-    pval <- res$p.value
-    tval <- res$estimate[[1]]
-    comp <- paste(i, "logFC", sep = "-")
-    list_val <- cbind(comp, pval, tval)
-    list_vals <- rbind(list_vals, list_val)
-    temp <- data
-    temp <- temp %>% filter(variable == "logCPM" & dataset == i)
-    res <- wilcox.test(value~Sex, data = temp, conf.int = T)
-    pval <- res$p.value
-    tval <- res$estimate[[1]]
-    comp <- paste(i, "logCPM", sep = "-")
-    list_val <- cbind(comp, pval, tval)
-    list_vals <- rbind(list_vals, list_val)
-}
-
-list_vals_mt <- list_vals %>% as.data.frame() %>% mutate(pval = as.numeric(pval), signif = case_when(pval > 0.05 ~ "NS", pval <0.05 & pval >= 0.01 ~ "*", pval < 0.01 & pval >= 0.001 ~ "**", pval < 0.001 ~ "***"), tval = as.numeric(tval), up_in = if_else(sign(tval) < 0, "Male", "Female"))
-#list_vals_nucmt <- list_vals %>% as.data.frame() %>% mutate(pval = as.numeric(pval), signif = case_when(pval > 0.05 ~ "NS", pval <0.05 & pval >= 0.01 ~ "*", pval < 0.01 & pval >= 0.001 ~ "**", pval < 0.001 ~ "***"), tval = as.numeric(tval), up_in = if_else(sign(tval) < 0, "Male", "Female"))
-#list_vals_rib <- list_vals %>% as.data.frame() %>% mutate(pval = as.numeric(pval), signif = case_when(pval > 0.05 ~ "NS", pval <0.05 & pval >= 0.01 ~ "*", pval < 0.01 & pval >= 0.001 ~ "**", pval < 0.001 ~ "***"), tval = as.numeric(tval), up_in = if_else(sign(tval) < 0, "Male", "Female"))
-#list_vals_etc_nmt <- list_vals %>% as.data.frame() %>% mutate(pval = as.numeric(pval), signif = case_when(pval > 0.05 ~ "NS", pval <0.05 & pval >= 0.01 ~ "*", pval < 0.01 & pval >= 0.001 ~ "**", pval < 0.001 ~ "***"), tval = as.numeric(tval), up_in = if_else(sign(tval) < 0, "Male", "Female"))
-```
-
-
-```{r wilcoxon_rank_rum_test_2}
-list_vals <- c()
-
-names <- unique(mt_info_for_plot$dataset)
-data = mt_info_for_plot
-classes <- unique(mt_info_for_plot$Class) %>% as.character()
-
-for(i in names){
-  for(j in classes){
-    temp <- data %>% filter(Class == j)
-    temp <- temp %>% filter(variable == "logFC" & dataset == i)
-    res <- wilcox.test(value~Sex, data = temp, conf.int = T)
-    pval <- res$p.value
-    tval <- res$estimate[[1]]
-    comp <- paste(i, "logFC", j, sep = "-")
-    list_val <- cbind(comp, pval, tval)
-    list_vals <- rbind(list_vals, list_val)
-    temp <- data %>% filter(Class == j)
-    temp <- temp %>% filter(variable == "logCPM" & dataset == i)
-    res <- wilcox.test(value~Sex, data = temp, conf.int = T)
-    pval <- res$p.value
-    tval <- res$estimate[[1]]
-    comp <- paste(i, "logCPM", j, sep = "-")
-    list_val <- cbind(comp, pval, tval)
-    list_vals <- rbind(list_vals, list_val)
-  }
-}
-
-list_vals_his_type <- list_vals %>% as.data.frame() %>% mutate(pval = as.numeric(pval), signif = case_when(pval > 0.05 ~ "NS", pval <0.05 & pval >= 0.01 ~ "*", pval < 0.01 & pval >= 0.001 ~ "**", pval < 0.001 ~ "***"), tval = as.numeric(tval), up_in = if_else(sign(tval) < 0, "Male", "Female"))
-#list_vals_his_rep <- list_vals %>% as.data.frame() %>% mutate(pval = as.numeric(pval), signif = case_when(pval > 0.05 ~ "NS", pval <0.05 & pval >= 0.01 ~ "*", pval < 0.01 & pval >= 0.001 ~ "**", pval < 0.001 ~ "***"), tval = as.numeric(tval), up_in = if_else(sign(tval) < 0, "Male", "Female"))
-#list_vals_cell_cyc <- list_vals %>% as.data.frame() %>% mutate(pval = as.numeric(pval), signif = case_when(pval > 0.05 ~ "NS", pval <0.05 & pval >= 0.01 ~ "*", pval < 0.01 & pval >= 0.001 ~ "**", pval < 0.001 ~ "***"), tval = as.numeric(tval), up_in = if_else(sign(tval) < 0, "Male", "Female"))
-```
-
-Table of significance
-
-```{r}
-names <- ls(pattern = "list_vals_")
-
-for(i in names){
-  temp <- get(i)
-  name <- str_replace(i, "list_vals_", "")
-  temp <- temp %>% mutate(gene_group = name)
-  assign(i, temp, envir = .GlobalEnv)
-}
-
-signif_table <- c()
-for(i in names){
-  temp <- get(i)
-  signif_table <- rbind(signif_table, temp)
-}
-
-signif_table <- signif_table %>% filter(signif != "NS")
-n_distinct(signif_table$gene_group)
-```
-
 
 
 
@@ -602,6 +511,4 @@ wz_res_tot_plot %>% ggplot(aes(x = dataset, y = factor(category_name, levels = c
 ggsave("meta_male_fem_sep_plot.pdf", width = 6, height = 10) 
 ```
 
-
-~FIN~
 
