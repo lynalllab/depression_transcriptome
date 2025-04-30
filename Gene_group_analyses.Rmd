@@ -1,0 +1,607 @@
+---
+title: "Gene group analysis"
+output: html_notebook
+---
+
+Loading libraries
+#ensembl grch38.p13
+
+```{r}
+library(dplyr)
+library(tibble)
+library(tidyr)
+library(reshape2)
+library(ggplot2)
+library(GSVA)
+library(ggsignif)
+library(stringr)
+library(gridExtra)
+library(clusterProfiler)
+library(Hmisc)
+library(corrplot)
+library(VennDiagram)
+library(ggpubr)
+library(biomaRt)
+library(strex)
+```
+
+
+```{r}
+gene_info <- gene_info %>% setNames(c("gene_id", "gene_name", "gene_biotype", "chromosome_name")) #for genes common in all dataset derived from BIODEP table
+```
+
+
+Preparing datasets
+
+```{r}
+gsea_b_f <- biodep_tt_cc_f %>% dplyr::select(-c(t, gene_name, gene_biotype)) %>% merge(., gene_info, by = "gene_id", all.x = T) %>% dplyr::select(gene_id, gene_name:chromosome_name, logFC:adj.P.Val) %>% dplyr::arrange(desc(abs(logFC))) 
+rownames(gsea_b_f) <- NULL
+colnames(gsea_b_f) <- c("gene_id", "gene_name", "gene_biotype","chromosome_name", "logFC", "logCPM", "PValue", "FDR")
+gsea_b_m <- biodep_tt_cc_m %>% dplyr::select(-c(t, gene_name, gene_biotype)) %>% merge(., gene_info, by = "gene_id", all.x = T) %>% dplyr::select(gene_id, gene_name:chromosome_name, logFC:adj.P.Val) %>% dplyr::arrange(desc(abs(logFC)))
+rownames(gsea_b_m) <- NULL
+colnames(gsea_b_m) <- c("gene_id", "gene_name", "gene_biotype","chromosome_name", "logFC", "logCPM", "PValue", "FDR")
+gsea_l_f <- le_tt_cc_f %>% rownames_to_column("gene_id") %>% merge(., gene_info, by = "gene_id", all.x = T) %>% dplyr::select(gene_id, gene_name:chromosome_name, logFC:adj.P.Val) %>% dplyr::select(-t) %>% dplyr::arrange(desc(abs(logFC))) 
+colnames(gsea_l_f) <- c("gene_id", "gene_name", "gene_biotype","chromosome_name", "logFC", "logCPM", "PValue", "FDR")
+gsea_l_m <- le_tt_cc_m %>% rownames_to_column("gene_id") %>% merge(., gene_info, by = "gene_id", all.x = T) %>% dplyr::select(gene_id, gene_name:chromosome_name, logFC:adj.P.Val) %>% dplyr::select(-t) %>% dplyr::arrange(desc(abs(logFC)))
+colnames(gsea_l_m) <- c("gene_id", "gene_name", "gene_biotype","chromosome_name", "logFC", "logCPM", "PValue", "FDR")
+gsea_m_f <- mostafavi_tt_cc_f %>% rownames_to_column("gene_id") %>% merge(., gene_info, by = "gene_id", all.x = T) %>% dplyr::select(gene_id, gene_name:chromosome_name, logFC:adj.P.Val) %>% dplyr::select(-t) %>% dplyr::arrange(desc(abs(logFC))) 
+colnames(gsea_m_f) <- c("gene_id", "gene_name", "gene_biotype","chromosome_name", "logFC", "logCPM", "PValue", "FDR")
+gsea_m_m <- mostafavi_tt_cc_m %>% rownames_to_column("gene_id") %>% merge(., gene_info, by = "gene_id", all.x = T) %>% dplyr::select(gene_id, gene_name:chromosome_name, logFC:adj.P.Val) %>% dplyr::select(-t) %>% dplyr::arrange(desc(abs(logFC))) 
+colnames(gsea_m_m) <- c("gene_id", "gene_name", "gene_biotype","chromosome_name", "logFC", "logCPM", "PValue", "FDR")
+gsea_d_f <- dbgap_tt_cc_f %>% dplyr::select(-c(GENENAME, t, B)) %>% merge(., gene_info, by.x = "SYMBOL", by.y = "gene_name", all.x = T) %>% dplyr::select(PROBEID, SYMBOL, gene_biotype, chromosome_name, logFC:adj.P.Val) %>% dplyr::arrange(desc(logFC)) %>% unique() %>% dplyr::arrange(desc(abs(logFC)))
+rownames(gsea_d_f) <- NULL
+colnames(gsea_d_f) <- c("gene_id", "gene_name", "gene_biotype","chromosome_name", "logFC", "logCPM", "PValue", "FDR")
+gsea_d_m <- dbgap_tt_cc_m %>% dplyr::select(-c(GENENAME, t, B)) %>% merge(., gene_info, by.x = "SYMBOL", by.y = "gene_name", all.x = T) %>% dplyr::select(PROBEID, SYMBOL, gene_biotype, chromosome_name, logFC:adj.P.Val) %>% dplyr::arrange(desc(logFC)) %>% unique() %>% dplyr::arrange(desc(abs(logFC)))
+rownames(gsea_d_m) <- NULL
+colnames(gsea_d_m) <- c("gene_id", "gene_name", "gene_biotype","chromosome_name", "logFC", "logCPM", "PValue", "FDR")
+gsea_g_f <- hitdip_tt_cc_f %>% dplyr::select(-c(GENENAME, t, B)) %>% merge(., gene_info, by.x = "SYMBOL", by.y = "gene_name", all.x = T) %>% dplyr::select(PROBEID, SYMBOL, gene_biotype, chromosome_name, logFC:adj.P.Val) %>% dplyr::arrange(desc(logFC)) %>% unique() %>% dplyr::arrange(desc(abs(logFC)))
+rownames(gsea_g_f) <- NULL
+colnames(gsea_g_f) <- c("gene_id", "gene_name", "gene_biotype","chromosome_name", "logFC", "logCPM", "PValue", "FDR")
+gsea_g_m <- hitdip_tt_cc_m %>% dplyr::select(-c(GENENAME, t, B)) %>% merge(., gene_info, by.x = "SYMBOL", by.y = "gene_name", all.x = T) %>% dplyr::select(PROBEID, SYMBOL, gene_biotype, chromosome_name, logFC:adj.P.Val) %>% dplyr::arrange(desc(logFC)) %>% unique() %>% dplyr::arrange(desc(abs(logFC)))
+rownames(gsea_g_m) <- NULL
+colnames(gsea_g_m) <- c("gene_id", "gene_name", "gene_biotype","chromosome_name", "logFC", "logCPM", "PValue", "FDR")
+
+```
+
+```{r}
+file_names <- ls(pattern = "gsea_")
+for(i in file_names){
+  temp <- get(i)
+  temp <- temp[!duplicated(temp$gene_name),]
+  assign(x = i, value = temp, envir = .GlobalEnv)
+}
+```
+
+```{r}
+comm_dataset <- rbind(gsea_b_f, gsea_b_m, gsea_l_f, gsea_l_m, gsea_m_f, gsea_m_m, gsea_d_f, gsea_d_m, gsea_g_f, gsea_g_m) %>% mutate(Sex = rep(c("Female", "Male", "Female", "Male", "Female", "Male", "Female", "Male", "Female", "Male"), c(nrow(gsea_b_f), nrow(gsea_b_m), nrow(gsea_l_f), nrow(gsea_l_m), nrow(gsea_m_f), nrow(gsea_m_m), nrow(gsea_d_f), nrow(gsea_d_m), nrow(gsea_g_f), nrow(gsea_g_m))), dataset = rep(c("BIODEP", "Le", "Mostafavi", "dbGaP", "HiTDiP"), c(nrow(rbind(gsea_b_f, gsea_b_m)), nrow(rbind(gsea_l_f, gsea_l_m)), nrow(rbind(gsea_m_f, gsea_m_m)), nrow(rbind(gsea_d_f, gsea_d_m)), nrow(rbind(gsea_g_f, gsea_g_m)))))
+
+#remove NA values
+comm_dataset <- comm_dataset %>% filter(is.na(gene_name) == F)
+```
+
+#After every chunk of code run appropriate wilcoxon rank sum test (1 for single variable e.g. MT and 2 for multiple categories e.g. histone: H1, H2A...)
+
+
+MT genes selected based on chr = MT
+going with gene name here as no gene id available for microarray data
+
+```{r}
+mt_info <- comm_dataset %>% filter(chromosome_name == "MT")
+
+mt_info_for_plot <- mt_info %>% dplyr::select(gene_name, logFC, logCPM, Sex, dataset) %>% melt(., id.vars = c("gene_name", "Sex", "dataset")) %>% mutate(group = "mt")
+
+```
+
+nuc-mit categories
+
+```{r}
+#https://mitominer.mrc-mbu.cam.ac.uk/release-4.0/results.do?trail=%257Cquery# #mitocarta true and IMPI known or predicted mitochondrial localisation ; 1157 -> 1057; 13 chrMT protein encoded removed (rest rRNAs and tRNAs)
+mito_nucleo <- read.delim("../nuc-mito.tsv", sep = "\t", header = F, stringsAsFactors = F) %>% dplyr::select(V1, V3, V5) %>% setNames(c("gene_id", "gene_name", "chr")) %>% filter(chr != "MT") %>% mutate(category = "Nuclear-mitochondrial genome")
+
+mt_info_for_plot <- comm_dataset %>% filter(gene_name %in% mito_nucleo$gene_name) %>% dplyr::select(gene_name, logFC, logCPM, Sex, dataset) %>% melt(., id.vars = c("gene_name", "Sex", "dataset")) %>% mutate(group = "nucmt")
+```
+
+Histone and ribosome categories
+
+```{r}
+att <- c("ensembl_gene_id", "external_gene_name", "description")
+gene_info_descp <- getBM(mart = ensembl, attributes = att)
+
+#histone gene identification from ensembl biomart
+histones <- gene_info_descp %>% filter(str_detect(description, "histone")) %>% filter(str_detect(description, "ase") == F) %>% filter(!external_gene_name %in% c("HIRAP1", "HIRA", "HINFP", "NASP", "SUPT6H", "TNP2", "ASF1A", "ASF1B")) %>% mutate(Category = "Histones")
+
+mt_info_for_plot <- comm_dataset %>% filter(gene_name %in% histones$external_gene_name) %>% dplyr::select(gene_name, logFC, logCPM, Sex, dataset) %>% melt(., id.vars = c("gene_name", "Sex", "dataset")) %>% mutate(group = "histones")
+
+```
+
+```{r}
+#remove mitochondrial ribosomal components
+ribosomes <- gene_info_descp %>% filter(str_detect(description, "ribosom")) %>% filter(str_detect(description, "mitocho")==F) %>% filter(str_detect(description, "biogenesis") == F) %>% filter(str_detect(description, "ase") == F) %>% filter(str_detect(description, "ubiquitin") == F) %>% filter(!external_gene_name %in% c("MRTO4", "RBFA", "RPF1", "RPF2", "RPF2P1", "RPF2P2", "NMD3", "NMD3P1", "NMD3P2", "RIMKLA", "RIMKLB", "RIMKLBP1", "RIMKLBP2", "RRBP1", "RPS19BP1", "CMSS1")) %>% mutate(Category = "Ribosomes")
+
+mt_info_for_plot <- comm_dataset %>% filter(gene_name %in% ribosomes$external_gene_name) %>% dplyr::select(gene_name, logFC, logCPM, Sex, dataset) %>% melt(., id.vars = c("gene_name", "Sex", "dataset")) %>% mutate(group = "ribosomes")
+
+```
+
+
+Histone split
+```{r}
+mt_info_for_plot <- comm_dataset %>% merge(., histones, by.x = "gene_name", by.y = "external_gene_name", all.x = T) %>% filter(Category == "Histones") %>% mutate(Class = case_when(str_detect(gene_name, "H1") ~ "H1", str_detect(gene_name, "H2A") ~ "H2A", str_detect(gene_name, "H2B") ~ "H2B", str_detect(gene_name, "H3") ~ "H3", str_detect(gene_name, "H4") ~ "H4", str_detect(gene_name, "HILS1") ~ "H1")) %>% dplyr::select(gene_name, logFC, logCPM, Sex, dataset, Class) %>% melt(., id.vars = c("gene_name", "Sex", "dataset", "Class")) %>% mutate(group = Class)
+```
+
+
+Histone replication dependent vs replication independent split
+
+https://www.ncbi.nlm.nih.gov/pmc/articles/PMC6158624/ <- details of histone replication-dependent/independent under section Histone variants. Variants are RI, whereas other histones are highly conserved, intron-less RDs produced during S phase of the cell cycle 
+RD/RI info for each gene curated manually through https://www.ncbi.nlm.nih.gov/gene under gene summary > summary
+
+```{r}
+#get histone gene summaries
+histones_entid <- read.table("../hist_all_ids_to_fill.txt", sep = "\t", stringsAsFactors = F) %>% merge(., histones, by.x = "V1", by.y = "ensembl_gene_id")
+
+
+mt_info_for_plot <- comm_dataset %>% merge(., histones_entid, by.x = "gene_name", by.y = "external_gene_name", all.x = T) %>% filter(Category == "Histones") %>% mutate(Class = case_when(V3 == "RD" ~ "Replication-\ndependent", V3 == "RI" ~ "Replication-\nindependent", V3 == "PSEUDO" ~ "Pseudogene")) %>% dplyr::select(gene_name, logFC, logCPM, Sex, dataset, Class) %>% melt(., id.vars = c("gene_name", "Sex", "dataset", "Class")) %>% mutate(group = Class)
+
+```
+
+
+https://www.sciencedirect.com/science/article/pii/S1046202315300098?via%3Dihub#b0080 <- uses cell-cycle gene list to identify phase/stage of single cell
+GO:0007049 - cell cycle related genes but no phase information, so restricting to:
+Cyclebase 3.0 <- https://cyclebase.org/CyclebaseSearch
+
+```{r}
+cell_cyc <- read.table("../cell_cycle_peaktimes.txt", sep = "\t", stringsAsFactors = F, header = T) %>% filter(Matched.name != "Matched name") %>% unique() %>% filter(str_detect(Primary.name, "ENS") == F) %>% mutate(gene_name = replace(Primary.name, c(134, 366, 45, 328, 266), c("CENPU", "ADGRE5", "RSRP1", "KNSTRN", "DDIAS"))) %>% merge(., gene_info, by = "gene_name") %>% dplyr::select(gene_id, gene_name, Peaktime) 
+cell_cyc$Peaktime <- factor(cell_cyc$Peaktime, levels = c("G1", "G1/S", "S", "G2", "G2/M", "M"))
+
+mt_info_for_plot <- comm_dataset %>% merge(., cell_cyc, by = "gene_name", all.x = T) %>% filter(is.na(Peaktime) == F) %>% mutate(Class = Peaktime) %>% dplyr::select(gene_name, logFC, logCPM, Sex, dataset, Class) %>% melt(., id.vars = c("gene_name", "Sex", "dataset", "Class")) %>% mutate(group = Class)
+```
+
+
+ETC
+
+```{r}
+etc_resp <- read.table("../gsva_pathways.txt", header = T, stringsAsFactors = F, sep = "\t") %>% separate_rows(gene, sep = "/") %>% filter(str_detect(pathway, "OXPHOS") == T) %>% filter(str_detect(gene, "MT-") == F) %>% mutate(Class = factor(pathway))
+
+mt_info_for_plot <- comm_dataset %>% merge(., etc_resp, by.x = "gene_name", by.y = "gene", all.x = T) %>% filter(is.na(pathway) == F) %>% dplyr::select(gene_name, logFC, logCPM, Sex, dataset, Class) %>% melt(., id.vars = c("gene_name", "Sex", "dataset", "Class")) %>% mutate(group = "OXPHOS")
+```
+
+
+```{r wilcoxon_rank_sum_test_1}
+list_vals <- c()
+
+names <- unique(mt_info_for_plot$dataset)
+data = mt_info_for_plot
+
+for(i in names){
+    temp <- data
+    temp <- temp %>% filter(variable == "logFC" & dataset == i)
+    res <- wilcox.test(value~Sex, data = temp, conf.int = T)
+    pval <- res$p.value
+    tval <- res$estimate[[1]]
+    comp <- paste(i, "logFC", sep = "-")
+    list_val <- cbind(comp, pval, tval)
+    list_vals <- rbind(list_vals, list_val)
+    temp <- data
+    temp <- temp %>% filter(variable == "logCPM" & dataset == i)
+    res <- wilcox.test(value~Sex, data = temp, conf.int = T)
+    pval <- res$p.value
+    tval <- res$estimate[[1]]
+    comp <- paste(i, "logCPM", sep = "-")
+    list_val <- cbind(comp, pval, tval)
+    list_vals <- rbind(list_vals, list_val)
+}
+
+list_vals_mt <- list_vals %>% as.data.frame() %>% mutate(pval = as.numeric(pval), signif = case_when(pval > 0.05 ~ "NS", pval <0.05 & pval >= 0.01 ~ "*", pval < 0.01 & pval >= 0.001 ~ "**", pval < 0.001 ~ "***"), tval = as.numeric(tval), up_in = if_else(sign(tval) < 0, "Male", "Female"))
+#list_vals_nucmt <- list_vals %>% as.data.frame() %>% mutate(pval = as.numeric(pval), signif = case_when(pval > 0.05 ~ "NS", pval <0.05 & pval >= 0.01 ~ "*", pval < 0.01 & pval >= 0.001 ~ "**", pval < 0.001 ~ "***"), tval = as.numeric(tval), up_in = if_else(sign(tval) < 0, "Male", "Female"))
+#list_vals_rib <- list_vals %>% as.data.frame() %>% mutate(pval = as.numeric(pval), signif = case_when(pval > 0.05 ~ "NS", pval <0.05 & pval >= 0.01 ~ "*", pval < 0.01 & pval >= 0.001 ~ "**", pval < 0.001 ~ "***"), tval = as.numeric(tval), up_in = if_else(sign(tval) < 0, "Male", "Female"))
+#list_vals_etc_nmt <- list_vals %>% as.data.frame() %>% mutate(pval = as.numeric(pval), signif = case_when(pval > 0.05 ~ "NS", pval <0.05 & pval >= 0.01 ~ "*", pval < 0.01 & pval >= 0.001 ~ "**", pval < 0.001 ~ "***"), tval = as.numeric(tval), up_in = if_else(sign(tval) < 0, "Male", "Female"))
+```
+
+
+```{r wilcoxon_rank_rum_test_2}
+list_vals <- c()
+
+names <- unique(mt_info_for_plot$dataset)
+data = mt_info_for_plot
+classes <- unique(mt_info_for_plot$Class) %>% as.character()
+
+for(i in names){
+  for(j in classes){
+    temp <- data %>% filter(Class == j)
+    temp <- temp %>% filter(variable == "logFC" & dataset == i)
+    res <- wilcox.test(value~Sex, data = temp, conf.int = T)
+    pval <- res$p.value
+    tval <- res$estimate[[1]]
+    comp <- paste(i, "logFC", j, sep = "-")
+    list_val <- cbind(comp, pval, tval)
+    list_vals <- rbind(list_vals, list_val)
+    temp <- data %>% filter(Class == j)
+    temp <- temp %>% filter(variable == "logCPM" & dataset == i)
+    res <- wilcox.test(value~Sex, data = temp, conf.int = T)
+    pval <- res$p.value
+    tval <- res$estimate[[1]]
+    comp <- paste(i, "logCPM", j, sep = "-")
+    list_val <- cbind(comp, pval, tval)
+    list_vals <- rbind(list_vals, list_val)
+  }
+}
+
+list_vals_his_type <- list_vals %>% as.data.frame() %>% mutate(pval = as.numeric(pval), signif = case_when(pval > 0.05 ~ "NS", pval <0.05 & pval >= 0.01 ~ "*", pval < 0.01 & pval >= 0.001 ~ "**", pval < 0.001 ~ "***"), tval = as.numeric(tval), up_in = if_else(sign(tval) < 0, "Male", "Female"))
+#list_vals_his_rep <- list_vals %>% as.data.frame() %>% mutate(pval = as.numeric(pval), signif = case_when(pval > 0.05 ~ "NS", pval <0.05 & pval >= 0.01 ~ "*", pval < 0.01 & pval >= 0.001 ~ "**", pval < 0.001 ~ "***"), tval = as.numeric(tval), up_in = if_else(sign(tval) < 0, "Male", "Female"))
+#list_vals_cell_cyc <- list_vals %>% as.data.frame() %>% mutate(pval = as.numeric(pval), signif = case_when(pval > 0.05 ~ "NS", pval <0.05 & pval >= 0.01 ~ "*", pval < 0.01 & pval >= 0.001 ~ "**", pval < 0.001 ~ "***"), tval = as.numeric(tval), up_in = if_else(sign(tval) < 0, "Male", "Female"))
+```
+
+Table of significance
+
+```{r}
+names <- ls(pattern = "list_vals_")
+
+for(i in names){
+  temp <- get(i)
+  name <- str_replace(i, "list_vals_", "")
+  temp <- temp %>% mutate(gene_group = name)
+  assign(i, temp, envir = .GlobalEnv)
+}
+
+signif_table <- c()
+for(i in names){
+  temp <- get(i)
+  signif_table <- rbind(signif_table, temp)
+}
+
+signif_table <- signif_table %>% filter(signif != "NS")
+n_distinct(signif_table$gene_group)
+```
+
+
+
+
+Permutation runs to identify significant results: rib, mt, nmt, etc, his and cell cycle
+
+Data prep
+```{r}
+
+mt_info <- comm_dataset %>% filter(chromosome_name == "MT")
+
+gene_of_int <- c(cell_cyc$gene_name, etc_resp$gene,  histones$external_gene_name, mito_nucleo$gene_name, ribosomes$external_gene_name, mt_info$gene_name) %>% as.data.frame() %>% setNames("gene_name") %>% unique()
+
+gene_popu <- comm_dataset %>% filter(!gene_name %in% gene_of_int$gene_name) %>% distinct(gene_name)
+
+intersect(gene_of_int$gene_name, gene_popu$gene_name)
+
+gene_popu <- comm_dataset %>% filter(!gene_name %in% gene_of_int$gene_name)
+
+```
+
+Method: Create bins based on gene numbers
+
+Function 1: cpm range picker
+
+```{r}
+cpm_range <- function(cpm, range){
+  pick <- table(cut(cpm, range, labels = F)) %>% as.data.frame() %>% filter(Freq == 1) %>% dplyr::select(Var1)
+  return(as.numeric(as.character(pick$Var1)))
+}
+```
+
+```{r}
+
+catg <- comm_dataset %>% filter(gene_name %in% gene_of_int$gene_name)
+
+cut_1<- c()
+for (i in 1:nrow(catg)){
+  cut_catg = cpm_range(catg$logCPM[i], range =  seq((min(comm_dataset$logCPM)-0.1), (max(comm_dataset$logCPM)+0.1), 0.1))
+  cut_1 <- c(cut_1, cut_catg)
+}
+   
+catg$cut_catg <- cut_1
+
+cut_1<- c()
+for (i in 1:nrow(gene_popu)){
+  cut_catg = cpm_range(gene_popu$logCPM[i], range =  seq((min(comm_dataset$logCPM)-0.1), (max(comm_dataset$logCPM)+0.1), 0.1))
+  cut_1 <- c(cut_1, cut_catg)
+}
+
+gene_popu -> gene_p
+gene_p$cut_catg <- cut_1
+
+#categories assigned ensuring bin size catg_cuts < bin size popu_cuts
+catg_cuts <- catg %>% mutate(pool = case_when(cut_catg >= 33 & cut_catg <= 35 ~ 33, cut_catg > 35 & cut_catg <= 120 ~ cut_catg - 2, cut_catg > 120 & cut_catg <= 130 ~ 121, cut_catg > 130 & cut_catg <= 140 ~ 122, cut_catg > 140 ~ 123, TRUE ~ cut_catg)) %>% mutate(name = paste(pool, dataset, Sex, sep = "_")) %>% group_by(name) %>% summarise(cnt = n()) 
+
+popu_cuts <- gene_p %>% mutate(pool = case_when(cut_catg >= 33 & cut_catg <= 35 ~ 33, cut_catg > 35 & cut_catg <= 120 ~ cut_catg - 2, cut_catg > 120 & cut_catg <= 130 ~ 121, cut_catg > 130 & cut_catg <= 140 ~ 122, cut_catg > 140 ~ 123, TRUE ~ cut_catg)) %>% mutate(name = paste(pool, dataset, Sex, sep = "_")) %>% group_by(name) %>% summarise(cnt = n())
+
+
+check <- merge(catg_cuts, popu_cuts, by = "name", all.x = T) %>% mutate(cnt.y = replace_na(cnt.y, replace = 0), comparison = if_else(cnt.x > cnt.y, "not ok", "ok")) %>% filter(comparison == "not ok")
+
+catg <- catg %>% mutate(fin_bin = case_when(cut_catg >= 33 & cut_catg <= 35 ~ 33, cut_catg > 35 & cut_catg <= 120 ~ cut_catg - 2, cut_catg > 120 & cut_catg <= 130 ~ 121, cut_catg > 130 & cut_catg <= 140 ~ 122, cut_catg > 140 ~ 123, TRUE ~ cut_catg))
+
+gene_p <- gene_p %>% mutate(fin_bin = case_when(cut_catg >= 33 & cut_catg <= 35 ~ 33, cut_catg > 35 & cut_catg <= 120 ~ cut_catg - 2, cut_catg > 120 & cut_catg <= 130 ~ 121, cut_catg > 130 & cut_catg <= 140 ~ 122, cut_catg > 140 ~ 123, TRUE ~ cut_catg))
+```
+
+Run permutation
+
+```{r}
+to_run <- signif_table %>% filter(gene_group %in% c("rib", "mt","nucmt", "etc_nmt", "his_rep", "cell_cyc")) %>% dplyr::select(comp, up_in, gene_group) %>% separate(comp, into = c("dataset", "group"), sep = "-logFC", remove = F) %>% separate(group, into = c(NA,"subgroup"), sep ="^-", remove = F) %>% dplyr::select(dataset, up_in, gene_group, subgroup) %>% filter(!subgroup  %in% c("G1", "S", "G2/M"))
+```
+
+```{r}
+
+perm_run_logfc <- function(gene_P = gene_p, filt_catg, Dataset, catg_perm = NULL){
+  #separate gene population by sex
+  gene_popu_case_f <- gene_P %>% filter(dataset == Dataset) %>% filter(Sex == "Female")
+  gene_popu_case_m <- gene_P %>% filter(dataset == Dataset) %>% filter(Sex == "Male")
+  
+  #common gene subset for males and females choose
+  gene_test <- filt_catg 
+  gene_test_f <- gene_test %>% filter(Sex == "Female")
+  gene_test_m <- gene_test %>% filter(Sex == "Male")
+  common_gene_set <- intersect(gene_test_f$gene_name, gene_test_m$gene_name) %>% as.data.frame() %>% setNames("gene_name")
+  gene_test <- gene_test %>% filter(gene_name %in% common_gene_set$gene_name)
+  gene_test_f <- gene_test %>% filter(Sex == "Female")
+  gene_test_m <- gene_test %>% filter(Sex == "Male")
+  
+  medfc_act_f <- gene_test_f %>% summarise(med = median(logFC, na.rm = T))
+  medfc_act_m <- gene_test_m %>% summarise(med = median(logFC, na.rm = T))
+  medfc_act_f <- medfc_act_f$med
+  medfc_act_m <- medfc_act_m$med
+  medfc_act_diff <- medfc_act_f - medfc_act_m
+  
+  med_perm_diff <- c()
+  med_perm_fem <- c()
+  med_perm_male <- c()
+  run_no <- c()
+    
+  for (run in 1:1000){
+  cat(paste(run, " ")); flush.console()
+  
+  gene_replacement <- c()
+  new_logFC <- c()
+  new_cpm <- c()
+  gene_tested_f <- c()
+  
+  for(i in 1:nrow(gene_test_f)){
+    bin <- gene_test_f$fin_bin[i]
+    gene_popu_sub <- gene_popu_case_f %>% filter(fin_bin == bin)
+    
+    gene_popu_sub_sub <- gene_popu_sub %>% filter(!(gene_name %in% gene_replacement))
+    samp_sel <- slice_sample(gene_popu_sub_sub, n = 1)
+    
+    gene_replacement <- c(gene_replacement, samp_sel$gene_name)
+    new_logFC <- c(new_logFC, samp_sel$logFC)
+    new_cpm <- c(new_cpm, samp_sel$logCPM)
+  }
+  gene_tested_f <- cbind(gene_replacement, new_cpm, new_logFC) %>% as.data.frame() %>% mutate(Sex = "Female")
+  
+  
+  gene_replacement <- c()
+  new_logFC <- c()
+  new_cpm <- c()
+  gene_tested_m <- c()
+  
+  for(i in 1:nrow(gene_test_m)){
+    
+    bin <- gene_test_m$fin_bin[i]
+    gene_popu_sub <- gene_popu_case_m %>% filter(fin_bin == bin)
+    
+    gene_popu_sub_sub <- gene_popu_sub %>% filter(!(gene_name %in% gene_replacement))
+    samp_sel <- slice_sample(gene_popu_sub_sub, n = 1)
+    
+    gene_replacement <- c(gene_replacement, samp_sel$gene_name)
+    new_logFC <- c(new_logFC, samp_sel$logFC)
+    new_cpm <- c(new_cpm, samp_sel$logCPM)
+  }
+  gene_tested_m <- cbind(gene_replacement, new_cpm, new_logFC) %>% as.data.frame() %>% mutate(Sex = "Male")
+
+  tem_med_f <- gene_tested_f %>% summarise(med = median(as.numeric(new_logFC), na.rm = T))
+  tem_med_m <- gene_tested_m %>% summarise(med = median(as.numeric(new_logFC), na.rm = T))
+  tem_med_diff <- tem_med_f$med - tem_med_m$med
+  med_perm_diff <- c(med_perm_diff, tem_med_diff)
+  med_perm_fem <- c(med_perm_fem, tem_med_f$med)
+  med_perm_male <- c(med_perm_male, tem_med_m$med)
+  run_no <- c(run_no, run)
+  
+  }
+  catg_perm <- cbind(run_no, med_perm_diff, medfc_act_diff, med_perm_fem, medfc_act_f, med_perm_male, medfc_act_m)
+  assign("perm_results", as.data.frame(catg_perm), envir = .GlobalEnv)
+}
+
+```
+
+
+
+```{r}
+names <- c("b", "l", "m", "d", "g")
+dataset_names <- c("BIODEP", "Le", "Mostafavi", "dbGaP", "HiTDiP")
+done_names <- ls(pattern = "perm_res_")
+run_perm_five <- function(Names, genesub, gene_col, outname_catg){
+  genesub <- genesub %>% dplyr::select(all_of(gene_col)) %>% setNames("gene_name")
+  for (i in Names){
+    check_name <- paste("perm_res", outname_catg, i, sep = "_")
+    if(!check_name %in% done_names){
+      dataset_name <- dataset_names[which(names == i)]
+      catg_case = catg %>% filter(dataset == dataset_name) %>% filter(gene_name %in% genesub$gene_name)
+      perm_run_logfc(gene_P = gene_p, filt_catg = catg_case, Dataset = dataset_name)
+      assign(paste("perm_res", outname_catg, i, sep = "_"), perm_results, envir = .GlobalEnv)
+    }
+  }
+}
+```
+
+     
+     
+```{r}
+genes_sub <- ribosomes
+run_perm_five(Names = names, genesub = genes_sub, gene_col = "external_gene_name", outname_catg = "rib")
+
+genes_sub <- catg %>% filter(chromosome_name == "MT")
+run_perm_five(Names = names, genesub = genes_sub, gene_col = "gene_name", outname_catg = "mt")
+
+genes_sub <- mito_nucleo
+run_perm_five(Names = names, genesub = genes_sub, gene_col = "gene_name", outname_catg = "nmt")
+
+genes_sub <- etc_resp
+run_perm_five(Names = names, genesub = genes_sub, gene_col = "gene", outname_catg = "etc")
+
+genes_sub <- histones_entid %>% mutate(Class = case_when(V3 == "RD" ~ "Replication-\ndependent", V3 == "RI" ~ "Replication-\nindependent", V3 == "PSEUDO" ~ "Pseudogene")) %>% filter(V3 == "RD")
+run_perm_five(Names = names, genesub = genes_sub, gene_col = "external_gene_name", outname_catg = "h_rd")
+
+genes_sub <- histones_entid %>% mutate(Class = case_when(V3 == "RD" ~ "Replication-\ndependent", V3 == "RI" ~ "Replication-\nindependent", V3 == "PSEUDO" ~ "Pseudogene")) %>% filter(V3 == "RI")
+run_perm_five(Names = names, genesub = genes_sub, gene_col = "external_gene_name", outname_catg = "h_ri")
+
+genes_sub <- cell_cyc %>% filter(Peaktime == "G1")
+run_perm_five(Names = names, genesub = genes_sub, gene_col = "gene_name", outname_catg = "cy_g1")
+
+genes_sub <- cell_cyc %>% filter(Peaktime == "G1/S")
+run_perm_five(Names = names, genesub = genes_sub, gene_col = "gene_name", outname_catg = "cy_g1s")
+
+genes_sub <- cell_cyc %>% filter(Peaktime == "G2")
+run_perm_five(Names = names, genesub = genes_sub, gene_col = "gene_name", outname_catg = "cy_g2")
+
+genes_sub <- cell_cyc %>% filter(Peaktime == "G2/M")
+run_perm_five(Names = names, genesub = genes_sub, gene_col = "gene_name", outname_catg = "cy_g2m")
+
+genes_sub <- cell_cyc %>% filter(Peaktime == "M")
+run_perm_five(Names = names, genesub = genes_sub, gene_col = "gene_name", outname_catg = "cy_m")
+
+genes_sub <- cell_cyc %>% filter(Peaktime == "S")
+run_perm_five(Names = names, genesub = genes_sub, gene_col = "gene_name", outname_catg = "cy_s")
+
+```
+     
+
+Plotting and statistical testing
+
+```{r}
+names <- ls(pattern = "perm_res_")
+
+perm_result_pvals <- c()
+
+pdf("perm_results_gene_groups.pdf", width = 7, height = 6)
+for(i in names){
+  temp <- get(i)
+  temp_pvals <- temp %>% mutate(count = abs(med_perm_diff) >= abs(medfc_act_diff)) %>% summarise(pval = round((sum(count)+1)/1001, 4)) %>% mutate(condition = i)
+  perm_result_pvals <- rbind(perm_result_pvals, temp_pvals)
+  if(temp_pvals$pval < 0.05){
+  p <- temp %>% ggplot(aes(x = med_perm_diff)) + geom_density(lty = 1) + theme_bw(base_size = 20) + labs(x = "Median logFCs", y = "Density", title = paste(i, temp_pvals$pval, sep =":  p-value = ")) + theme(axis.title = element_text(colour = "black")) + geom_vline(aes(xintercept = medfc_act_diff), lty = 2, colour = "red3")
+  print(p)
+  }
+}
+dev.off()
+```
+
+```{r}
+sum(perm_result_pvals$pval < 0.05)
+```
+
+
+```{r}
+samples <- perm_result_pvals %>% filter(pval < 0.05)
+```
+
+
+
+Make male, female plot.
+
+```{r}
+names <- ls(pattern = "perm_res_")
+all_male_fem_perm_m <- c()
+all_male_fem_perm_f <- c()
+
+for(i in names){
+  temp <- get(i)
+  catg_name = str_replace(i, "perm_res_", "")
+  male_val = temp$medfc_act_m[1]
+  temp_pvals <- temp %>% mutate(count = abs(med_perm_male) >= abs(medfc_act_m)) %>% summarise(pval = round((sum(count)+1)/1001, 4)) 
+  male_pval = temp_pvals$pval
+  row_all <- cbind(catg_name, male_val, male_pval)
+  all_male_fem_perm_m <- rbind(all_male_fem_perm_m, row_all)
+  fem_val = temp$medfc_act_f[1]
+  temp_pvals <- temp %>% mutate(count = abs(med_perm_fem) >= abs(medfc_act_f)) %>% summarise(pval = round((sum(count)+1)/1001, 4)) 
+  fem_pval = temp_pvals$pval
+  row_all <- cbind(catg_name, fem_val, fem_pval)
+  all_male_fem_perm_f <- rbind(all_male_fem_perm_f, row_all)
+}
+
+names <- c("_b$", "_d$", "_g$", "_l$", "_m$")
+file_names <- c("all_male_fem_perm_f", "all_male_fem_perm_m")
+for(i in file_names){
+  print(i)
+  temp <- get(i) %>% as.data.frame() %>% setNames(c("catg_name", "medlogfc", "pval"))
+  temp_rebind <- c()
+  for(j in names){
+    print(j)
+    temp_sub <- temp %>% filter(str_detect(catg_name, j) == T)
+    temp_sub$fdr <- p.adjust(temp_sub$pval, method = "BH")
+    temp_rebind <- rbind(temp_rebind, temp_sub)
+  }
+  assign(paste(i, "rebind", sep = "_"), temp_rebind, envir = .GlobalEnv)
+}
+
+
+all_male_fem_perm <- rbind(all_male_fem_perm_f_rebind, all_male_fem_perm_m_rebind) %>% as.data.frame() %>% mutate(Sex = rep(c("Female", "Male"), times = c(60,60))) %>% mutate(directionlogFC = medlogfc) %>% dplyr::select(-c(pval, medlogfc)) %>% melt(., id.vars = c("catg_name", "Sex", "directionlogFC")) %>% separate(catg_name, into = c("category", "dataset"), sep = "\\_(?!.*_)", remove = F) %>% mutate(FDR = if_else(value < 0.05, round(as.numeric(value), 3), 0.1))
+
+all_male_fem_perm <- all_male_fem_perm %>% dplyr::select(category:directionlogFC, FDR) %>% mutate(match = paste(category, dataset, Sex, sep = "_"))
+
+check1<- c("rib", "mt", "nmt", "etc", "h_rd", "h_ri", "cy_g1", "cy_g1s", "cy_s", "cy_g2", "cy_g2m", "cy_m")
+check2 <- unique(all_male_fem_perm$dataset)
+check3 <- unique(all_male_fem_perm$Sex)
+template <- expand.grid(check1, check2, check3)
+template <- template %>% setNames(c("category", "dataset", "Sex")) %>% mutate(directionlogFC = 0, FDR = 0.1, match = paste(category, dataset, Sex, sep = "_"))
+template <- template %>% filter(!match %in% all_male_fem_perm$match)
+
+all_male_fem_perm <- rbind(all_male_fem_perm, template)
+
+all_male_fem_perm %>% ggplot(aes(x = dataset, y = factor(category, levels = c("rib", "mt", "nmt", "etc", "h_rd", "h_ri", "cy_g1", "cy_g1s", "cy_s", "cy_g2", "cy_g2m", "cy_m")), fill = as.numeric(directionlogFC), size = as.numeric(FDR))) + geom_point(shape = 22) + theme_minimal() + facet_grid(~Sex) + scale_y_discrete(limits = rev)+ theme(strip.background = element_rect(fill = "black"), strip.text = element_text(color =  "white", face = "bold"), plot.title = element_text(hjust = 0.5)) + scale_fill_gradient2(high = "blue3", low = "red3", mid = "white", limits = c(-0.35, 0.35)) + scale_size(breaks = c(0.001, 0.01, 0.049), limits = c(0,0.1), range = c(10,3))
+ggsave("all_perm_male_fem_sep_plot.pdf", width = 10, height = 7) 
+```
+
+Weighted z meta-analysis
+
+```{r}
+
+all_f_perm <- all_male_fem_perm_f_rebind %>% mutate(category = str_before_last(catg_name, pattern = "_"), dataset = str_after_last(catg_name, pattern = "_"), pval = as.numeric(pval))
+
+all_f_perm_pval <- all_f_perm %>% dplyr::select(-catg_name) %>% dcast(., formula = category ~ dataset, value.var = "pval") %>% column_to_rownames("category") %>% t() %>% as.data.frame() %>% as.list()
+all_f_perm_sign <- all_f_perm %>% mutate(sign = if_else(sign(as.numeric(medlogfc)) >= 0, 1, -1)) %>% dcast(., formula = category ~ dataset, value.var = "sign") %>% column_to_rownames("category") %>% t() %>% as.data.frame() %>% as.list()
+weight_vals <- c(146, 3001, 134, 89, 630)
+
+source("wZ.R")
+wZ_scores_female <- c()
+for (i in names(all_f_perm_pval)){
+ temp <- wZ(p = all_f_perm_pval[[i]], weight = weight_vals, is.onetail = F, eff.sign = all_f_perm_sign[[i]])
+ wZ_scores_female <- rbind(wZ_scores_female, temp)
+}
+
+wZ_scores_female <- wZ_scores_female %>% as.data.frame()
+rownames(wZ_scores_female) <- names(all_f_perm_pval)
+wZ_scores_female$fdr <- p.adjust(wZ_scores_female$p, method = "BH")
+
+
+all_m_perm <- all_male_fem_perm_m_rebind %>% mutate(category = str_before_last(catg_name, pattern = "_"), dataset = str_after_last(catg_name, pattern = "_"), pval = as.numeric(pval))
+
+all_m_perm_pval <- all_m_perm %>% dplyr::select(-catg_name) %>% dcast(., formula = category ~ dataset, value.var = "pval") %>% column_to_rownames("category") %>% t() %>% as.data.frame() %>% as.list()
+all_m_perm_sign <- all_m_perm %>% mutate(sign = if_else(sign(as.numeric(medlogfc)) >= 0, 1, -1)) %>% dcast(., formula = category ~ dataset, value.var = "sign") %>% column_to_rownames("category") %>% t() %>% as.data.frame() %>% as.list()
+weight_vals <- c(65, 1539, 47, 64, 266)
+
+wZ_scores_male <- c()
+for (i in names(all_m_perm_pval)){
+ temp <- wZ(p = all_m_perm_pval[[i]], weight = weight_vals, is.onetail = F, eff.sign = all_m_perm_sign[[i]])
+ wZ_scores_male <- rbind(wZ_scores_male, temp)
+}
+
+wZ_scores_male <- wZ_scores_male %>% as.data.frame()
+rownames(wZ_scores_male) <- names(all_m_perm_pval)
+wZ_scores_male$fdr <- p.adjust(wZ_scores_male$p, method = "BH")
+```
+
+plot
+
+```{r}
+wz_res_tot_plot <- rbind(wZ_scores_female, wZ_scores_male) %>% mutate(Sex = rep(c("Female", "Male"), c(12, 12))) %>% mutate(dataset = "Combined", FDR = if_else(fdr < 0.05, fdr, 0.1)) %>% rownames_to_column("category") %>% mutate(direction = as.character(overall.eff.direction)) %>% mutate(category_name = if_else(Sex =="Male", str_before_last(category, pattern = "1"), category))
+
+wz_res_tot_plot %>% ggplot(aes(x = dataset, y = factor(category_name, levels = c("rib", "mt", "nmt", "etc", "h_rd", "h_ri", "cy_g1", "cy_g1s", "cy_s", "cy_g2", "cy_g2m", "cy_m")))) + geom_point(aes(fill = direction, size = FDR), shape = 22, alpha = 0.8) + theme_minimal(base_size = 14) + facet_wrap(dataset+Sex~., nrow = 1, ncol = 11, scales = "free_x") + labs(x = "", y = "", title = "", fill = "logFC") + theme(strip.background = element_rect(fill = "black"), strip.text = element_text(color = "white", face = "bold"), plot.title = element_text(hjust = 0.5), axis.text.x = element_text(colour = "white")) + scale_fill_manual(values = c("#D93A20", "#4022D3"), labels = c("Decreased", "Increased")) + scale_size(breaks = c(0.001, 0.01, 0.049), limits = c(0, 0.1), range = c(12, 5)) + scale_y_discrete(limits = rev)
+ggsave("meta_male_fem_sep_plot.pdf", width = 6, height = 10) 
+```
+
+
+~FIN~
+

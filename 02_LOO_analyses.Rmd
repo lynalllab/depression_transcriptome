@@ -1,0 +1,143 @@
+---
+title: "Leave-one-out analysis"
+output: html_notebook
+---
+
+Loading libraries
+
+```{r}
+library(dplyr)
+library(tibble)
+library(tidyr)
+library(stringr)
+library(VennDiagram)
+library(ggplot2)
+library(reshape2)
+library(Hmisc)
+library(corrplot)
+library(enrichplot) 
+library(ReactomePA)
+library(clusterProfiler)
+library(ggpattern)
+library(bacon)
+library(sdef)
+library(ggpubr)
+library(openxlsx)
+library(ggvenn)
+```
+
+
+```{r}
+source("bacon_weightedz.r")
+source("bacon_weightedz_withNAs.r")
+```
+
+Leave one analysis
+
+cc pooled common genes meta-analysis without one of the cohorts
+
+First, common gene set
+```{r}
+gene_meta_pooled <- gene_list %>% merge(., biodep_tt_cc_pooled, all.x =T, by = "gene_name") %>% 
+  mutate(se = logFC/t) %>% dplyr::select(gene_name, gene_id, logFC, P.Value, AveExpr) %>% setNames(c("gene_name", "gene_id", "logFC_b", "PValue_b", "logCPM_b"))
+gene_meta_pooled <- le_tt_cc_pooled %>% rownames_to_column("gene_id") %>% merge(., gene_meta_pooled, all.y= T, by = "gene_id") %>% mutate(se = logFC/t) %>% dplyr::select(gene_name, gene_id, logFC, P.Value, AveExpr, logFC_b:logCPM_b) %>% setNames(c("gene_name", "gene_id", "logFC_l", "PValue_l", "logCPM_l", "logFC_b", "PValue_b", "logCPM_b"))
+gene_meta_pooled <- mostafavi_tt_cc_pooled %>% rownames_to_column("gene_id") %>% merge(., gene_meta_pooled, all.y= T, by = "gene_id") %>% mutate(se = logFC/t) %>% dplyr::select(gene_name, gene_id, logFC, P.Value, AveExpr, logFC_l:logCPM_b) %>% setNames(c("gene_name", "gene_id", "logFC_m", "PValue_m", "logCPM_m", "logFC_l", "PValue_l", "logCPM_l", "logFC_b", "PValue_b", "logCPM_b"))
+
+dup_ids <- gene_meta_pooled %>% group_by(gene_name) %>% summarise(cnt = n()) %>% filter(cnt >1)
+not_selected_ids <- gene_meta_pooled %>% filter(gene_name %in% dup_ids$gene_name) %>% mutate(avg_logcpm = abs((logCPM_m + logCPM_b + logCPM_l)/3)) %>% arrange(gene_name, avg_logcpm) %>% distinct(gene_name, .keep_all = T)
+
+gene_meta_pooled <- gene_meta_pooled %>% filter(!gene_id %in% not_selected_ids$gene_id) %>% dplyr::select(-gene_id)
+
+#add microarray data: probe ids different between platforms, so processing individual data sets separately
+
+gene_meta_pooled <- merge(gene_meta_pooled, dbgap_tt_cc_pooled, all.x = T, by.x ="gene_name", by.y = "SYMBOL")  %>% mutate(se = logFC/t) %>% dplyr::select(gene_name, logFC, P.Value, AveExpr, logFC_m:logCPM_b) %>% setNames(c("gene_name", "logFC_d", "PValue_d", "logCPM_d", "logFC_m", "PValue_m", "logCPM_m", "logFC_l", "PValue_l", "logCPM_l", "logFC_b", "PValue_b", "logCPM_b")) 
+gene_meta_pooled <- gene_meta_pooled %>% arrange(gene_name, desc(logCPM_d)) %>% distinct(gene_name, .keep_all = T)
+
+gene_meta_pooled <- merge(gene_meta_pooled, hitdip_tt_cc_pooled, all.x = T, by.x ="gene_name", by.y = "SYMBOL")  %>% mutate(se = logFC/t) %>% dplyr::select(gene_name, logFC, P.Value, AveExpr, logFC_d:logCPM_b) %>% setNames(c("gene_name", "logFC_g", "PValue_g", "logCPM_g", "logFC_d", "PValue_d", "logCPM_d", "logFC_m", "PValue_m", "logCPM_m", "logFC_l", "PValue_l", "logCPM_l", "logFC_b", "PValue_b", "logCPM_b")) 
+gene_meta_pooled <- gene_meta_pooled %>% arrange(gene_name, desc(logCPM_g)) %>% distinct(gene_name, .keep_all = T)
+```
+
+1) Without BIODEP
+```{r}
+gene_meta_pooled_sub <- gene_meta_pooled %>% dplyr::select(-c(logFC_b:logCPM_b))
+p_vals <- gene_meta_pooled_sub %>% column_to_rownames("gene_name") %>% dplyr::select(PValue_m, PValue_l, PValue_d, PValue_g) %>% t()
+weight_vals_case <- c(452, 75, 1564, 120) %>% as.matrix()
+weight_vals_controls <- c(444, 78, 2976, 61) %>% as.matrix()
+sign_vals <- gene_meta_pooled_sub %>% column_to_rownames("gene_name") %>% mutate(sign_m = sign(logFC_m), sign_l = sign(logFC_l), sign_d = sign(logFC_d), sign_g = sign(logFC_g)) %>% dplyr::select(sign_m, sign_l, sign_d, sign_g) %>% t()
+rownames(p_vals) <- c("Mostafavi", "Le", "dbGaP", "HiTDiP")
+rownames(sign_vals) <- c("Mostafavi", "Le", "dbGaP", "HiTDiP")
+
+bacon_meta_dge_pooled_wob <- BACON_adjusted_WeightedZ(Pvalue = p_vals, Dir = sign_vals, SampleCase = weight_vals_case, SampleControl = weight_vals_controls, MultipleCorrection = "BH", seed = 1101)
+bacon_meta_dge_pooled_wob <-  as.data.frame(bacon_meta_dge_pooled_wob)
+rownames(bacon_meta_dge_pooled_wob) <- gene_names
+bacon_meta_dge_pooled_wob %>% mutate(dir = if_else(sign(BacWeightedZ_meta) >=0, "Up", "Down")) %>% filter(pvalue.BacWeightedZ_adj_pval < 0.05) %>% group_by(dir) %>% summarise(count = n())
+```
+
+2) Without Le
+```{r}
+gene_meta_pooled_sub <- gene_meta_pooled %>% dplyr::select(-c(logFC_l:logCPM_l))
+p_vals <- gene_meta_pooled_sub %>% column_to_rownames("gene_name") %>% dplyr::select(PValue_m, PValue_b, PValue_d, PValue_g) %>% t()
+weight_vals_case <- c(452, 164, 1564, 120) %>% as.matrix()
+weight_vals_controls <- c(444, 47, 2976, 61) %>% as.matrix()
+sign_vals <- gene_meta_all %>% column_to_rownames("gene_name") %>% mutate(sign_m = sign(logFC_m), sign_b = sign(logFC_b), sign_d = sign(logFC_d), sign_g = sign(logFC_g)) %>% dplyr::select(sign_m, sign_b, sign_d, sign_g) %>% t()
+rownames(p_vals) <- c("Mostafavi", "BIODEP", "dbGaP", "HiTDiP")
+rownames(sign_vals) <- c("Mostafavi", "BIODEP", "dbGaP", "HiTDiP")
+
+bacon_meta_dge_pooled_wol <- BACON_adjusted_WeightedZ(Pvalue = p_vals, Dir = sign_vals, SampleCase = weight_vals_case, SampleControl = weight_vals_controls, MultipleCorrection = "BH", seed = 1102)
+bacon_meta_dge_pooled_wol <-  as.data.frame(bacon_meta_dge_pooled_wol)
+rownames(bacon_meta_dge_pooled_wol) <- gene_names
+bacon_meta_dge_pooled_wol %>% mutate(dir = if_else(sign(BacWeightedZ_meta) >=0, "Up", "Down")) %>% filter(pvalue.BacWeightedZ_adj_pval < 0.05) %>% group_by(dir) %>% summarise(count = n())
+
+```
+
+3) Without Mostafavi
+```{r}
+gene_meta_pooled_sub <- gene_meta_pooled %>% dplyr::select(-c(logFC_m:logCPM_m))
+p_vals <- gene_meta_pooled_sub %>% column_to_rownames("gene_name") %>% dplyr::select(PValue_b, PValue_l, PValue_d, PValue_g) %>% t()
+weight_vals_case <- c(164, 75, 1564, 120) %>% as.matrix()
+weight_vals_controls <- c(47, 78, 2976, 61) %>% as.matrix()
+sign_vals <- gene_meta_all %>% column_to_rownames("gene_name") %>% mutate(sign_b = sign(logFC_b), sign_l = sign(logFC_l), sign_d = sign(logFC_d), sign_g = sign(logFC_g)) %>% dplyr::select(sign_b, sign_l, sign_d, sign_g) %>% t()
+rownames(p_vals) <- c("BIODEP", "Le", "dbGaP", "HiTDiP")
+rownames(sign_vals) <- c("BIODEP", "Le", "dbGaP", "HiTDiP")
+
+bacon_meta_dge_pooled_wom <- BACON_adjusted_WeightedZ(Pvalue = p_vals, Dir = sign_vals, SampleCase = weight_vals_case, SampleControl = weight_vals_controls, MultipleCorrection = "BH", seed = 1103)
+bacon_meta_dge_pooled_wom <-  as.data.frame(bacon_meta_dge_pooled_wom)
+rownames(bacon_meta_dge_pooled_wom) <- gene_names
+bacon_meta_dge_pooled_wom %>% mutate(dir = if_else(sign(BacWeightedZ_meta) >=0, "Up", "Down")) %>% filter(pvalue.BacWeightedZ_adj_pval < 0.05) %>% group_by(dir) %>% summarise(count = n())
+
+```
+
+4) Without dbGaP
+```{r}
+gene_meta_pooled_sub <- gene_meta_pooled %>% dplyr::select(-c(logFC_d:logCPM_d))
+p_vals <- gene_meta_pooled_sub %>% column_to_rownames("gene_name") %>% dplyr::select(PValue_m, PValue_b, PValue_l, PValue_g) %>% t()
+weight_vals_case <- c(452, 164, 75, 120) %>% as.matrix()
+weight_vals_controls <- c(444, 47, 78, 61) %>% as.matrix()
+sign_vals <- gene_meta_all %>% column_to_rownames("gene_name") %>% mutate(sign_m = sign(logFC_m), sign_b = sign(logFC_b), sign_l = sign(logFC_l), sign_g = sign(logFC_g)) %>% dplyr::select(sign_m, sign_b, sign_l, sign_g) %>% t()
+rownames(p_vals) <- c("Mostafavi", "BIODEP", "Le", "HiTDiP")
+rownames(sign_vals) <- c("Mostafavi", "BIODEP", "Le", "HiTDiP")
+
+bacon_meta_dge_pooled_wod <- BACON_adjusted_WeightedZ(Pvalue = p_vals, Dir = sign_vals, SampleCase = weight_vals_case, SampleControl = weight_vals_controls, MultipleCorrection = "BH", seed = 1104)
+bacon_meta_dge_pooled_wod <-  as.data.frame(bacon_meta_dge_pooled_wod)
+rownames(bacon_meta_dge_pooled_wod) <- gene_names
+bacon_meta_dge_pooled_wod %>% mutate(dir = if_else(sign(BacWeightedZ_meta) >=0, "Up", "Down")) %>% filter(pvalue.BacWeightedZ_adj_pval < 0.05) %>% group_by(dir) %>% summarise(count = n())
+
+```
+
+5) Without HiTDiP
+```{r}
+gene_meta_pooled_sub <- gene_meta_pooled %>% dplyr::select(-c(logFC_g:logCPM_g))
+p_vals <- gene_meta_pooled_sub %>% column_to_rownames("gene_name") %>% dplyr::select(PValue_m, PValue_b, PValue_l, PValue_d) %>% t()
+weight_vals_case <- c(452, 164, 75, 1564) %>% as.matrix()
+weight_vals_controls <- c(444, 47, 78, 2976) %>% as.matrix()
+sign_vals <- gene_meta_all %>% column_to_rownames("gene_name") %>% mutate(sign_m = sign(logFC_m), sign_b = sign(logFC_b), sign_l = sign(logFC_l), sign_d = sign(logFC_d)) %>% dplyr::select(sign_m, sign_b, sign_l, sign_d) %>% t()
+rownames(p_vals) <- c("Mostafavi", "BIODEP", "Le", "dbGaP")
+rownames(sign_vals) <- c("Mostafavi", "BIODEP", "Le", "dbGaP")
+
+bacon_meta_dge_pooled_wog <- BACON_adjusted_WeightedZ(Pvalue = p_vals, Dir = sign_vals, SampleCase = weight_vals_case, SampleControl = weight_vals_controls, MultipleCorrection = "BH", seed = 1105)
+bacon_meta_dge_pooled_wog <-  as.data.frame(bacon_meta_dge_pooled_wog)
+rownames(bacon_meta_dge_pooled_wog) <- gene_names
+bacon_meta_dge_pooled_wog %>% mutate(dir = if_else(sign(BacWeightedZ_meta) >=0, "Up", "Down")) %>% filter(pvalue.BacWeightedZ_adj_pval < 0.05) %>% group_by(dir) %>% summarise(count = n())
+
+```
+

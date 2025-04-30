@@ -1,0 +1,356 @@
+---
+title: "BIODEP DGE"
+output: html_notebook
+---
+
+Loading required libraries
+
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(reshape2)
+library(tibble)
+library(edgeR)
+```
+
+-------------------
+Not cell-corrected
+-------------------
+
+Create design matrix for DGE analysis
+
+```{r}
+de_catg <- final_metadata %>% mutate(centre = as.factor(as.character(Centre)), plate = as.factor(as.character(Plate.ID)), sex = as.factor(as.character(Sex)), disorder = as.factor(if_else(study_arm == 1, "CNT", "MDD"))) %>% dplyr::select(centre, disorder, plate, sex, Age)
+
+design_pooled <- model.matrix(~disorder + centre + plate + sex + Age, data = de_catg)
+
+de_catg_female <- final_metadata_female %>% mutate(centre = as.factor(as.character(Centre)), plate = as.factor(as.character(Plate.ID)), disorder = as.factor(if_else(study_arm == 1, "CNT", "MDD"))) %>% dplyr::select(centre, disorder, plate, Age)
+
+design_female <- model.matrix(~ disorder + centre + plate + Age, data = de_catg_female)
+
+de_catg_male <- final_metadata_male %>% mutate(centre = as.factor(as.character(Centre)), plate = as.factor(as.character(Plate.ID)), disorder = as.factor(if_else(study_arm == 1, "CNT", "MDD"))) %>% dplyr::select(centre, disorder, plate, Age)
+
+design_male <- model.matrix(~ disorder + centre + plate + Age, data = de_catg_male)
+```
+
+Conduct DGE analysis using limma-voom
+
+```{r}
+voom_pooled <- voomWithQualityWeights(data_filtered, design = design_pooled, plot = T) 
+voom_fit <- lmFit(voom_pooled, design = design_pooled)
+voom_fit <- eBayes(voom_fit)
+biodep_tt_ncc_pooled <- topTable(voom_fit, coef = "disorderMDD", number = nrow(data_filtered))
+results <- decideTests(voom_fit)
+summary(results)
+
+
+voom_m <- voomWithQualityWeights(data_filtered_male, design = design_male, plot = T)
+voom_fit_m <- lmFit(voom_m, design = design_male)
+voom_fit_m <- eBayes(voom_fit_m)
+biodep_tt_ncc_m <- topTable(voom_fit_m, coef = "disorderMDD", number = nrow(data_filtered_male))
+results_m <- decideTests(voom_fit_m)
+summary(results_m)
+
+
+voom_f <- voomWithQualityWeights(data_filtered_female, design = design_female, plot = T)
+voom_fit_f <- lmFit(voom_f, design = design_female)
+voom_fit_f <- eBayes(voom_fit_f)
+biodep_tt_ncc_f <- topTable(voom_fit_f, coef = "disorderMDD", number = nrow(data_filtered_female))
+results_f <- decideTests(voom_fit_f)
+summary(results_f)
+```
+
+-----------------------
+Cell-corrected analysis
+-----------------------
+
+Load cell count data
+
+```{r}
+cell_counts <- read.delim("Apollo_qm_combi.csv", sep = ",", header = T, stringsAsFactors = F, row.names = 1) %>% dplyr::select(name, macs_flow_centre, macs_b_of_total:macs_nk_cd56hi_of_total) 
+```
+
+Retain datasets with cell count information
+
+```{r}
+final_metadata <- final_metadata %>% merge(., cell_counts, by.x = "Correct_Subject.ID", by.y = "name") %>% mutate(disorder = if_else(study_arm == 1, "CNT", "MDD"))
+
+pdf("cellcount_plot.pdf", width = 8, height = 7)
+boxplot(final_metadata[21:29]*100, ylab = "Percentage of PBMCs", las = 2, par(mar = c(15,5,0.5,0.5)))
+dev.off()
+```
+
+Impute missing values
+#code credit M-E Lynall
+
+```{r}
+cell_names <- c("macs_b_of_total", "macs_cd4_of_total", "macs_cd8_of_total", "macs_mono_class_of_total", "macs_mono_int_of_total", "macs_mono_nonclass_of_total", "macs_nk_cd56hi_of_total","macs_nkt_of_total","macs_nk_cd16hi_of_total")
+
+
+#Turn cell count proportions into percentages to make LFC more meaningful
+final_metadata[cell_names] <- lapply(final_metadata[cell_names], function(x) 100 * x)
+```
+
+
+```{r}
+library(table1)
+
+rndr <- function(x, name, ...) {
+    if (length(x) == 0) {
+        y <- final_metadata[[name]]
+        s <- rep("", length(render.default(x=y, name=name, ...)))
+        if (is.numeric(y)) {
+            p <- wilcox.test(y ~ final_metadata$disorder)$p.value
+        } else {
+            p <- chisq.test(table(y, droplevels(final_metadata$disorder)))$p.value
+        }
+        s[2] <- sub("<", "&lt;", format.pval(p, digits=3, eps=0.001))
+        s
+    } else {
+        render.default(x=x, name=name, ...)
+    }
+}
+
+tmp <- final_metadata
+tmp$disorder <- factor(as.character(final_metadata$disorder), levels=c("CNT","MDD","P-value"))
+
+rndr.strat <- function(label, n, ...) {
+    ifelse(n==0, label, render.strat.default(label, n, ...))
+}
+
+table1(~ macs_b_of_total + macs_cd4_of_total + macs_cd8_of_total + macs_mono_class_of_total + macs_mono_int_of_total + macs_mono_nonclass_of_total + macs_nk_cd56hi_of_total + macs_nkt_of_total + macs_nk_cd16hi_of_total | disorder, data=tmp, overall="Total", droplevels=F, render=rndr, render.strat=rndr.strat)
+#image opened in html and screenshot taken
+```
+
+```{r}
+# First look at missing values problem
+library(visdat)
+library(naniar)
+library(mclust)
+library(mix)
+
+
+vis_miss(final_metadata[,cell_names])
+ggsave(filename = "miss_counts_to_impute.pdf", width=6, height=6)
+
+#all entries have a macs so used downstream as such
+
+# Careful - MUST make factor if want treated as categorical
+final_metadata$disorder <- factor(final_metadata$disorder) 
+final_metadata$macs_flow_centre <- factor(final_metadata$macs_flow_centre)
+final_metadata$Sex <- factor(final_metadata$Sex)
+
+```
+
+
+```{r}
+
+set.seed(111)
+print("Imputing using mix package")
+
+input <- final_metadata[, c("Age", "Sex", "disorder", "macs_flow_centre", cell_names)]
+str(input)
+nimp <- sum(is.na(input))
+nimp2 <- nrow(input)*ncol(input)
+print(paste("Number of elements imputed in total = ",nimp," out of ",nimp2," total elements as follows: (",signif(nimp/nimp2*100,2)," %)",sep=""))
+print(sapply(input,function(x) sum(is.na(x))))
+print("Now impute")
+tmp <- imputeData(input,seed=111,verbose=TRUE)
+tmp <-tmp %>% as.data.frame()
+tmp$Correct_Subject.ID <- final_metadata$Correct_Subject.ID
+print(head(tmp))
+# Drop unimputed and join imputed
+imputed_metadata <- final_metadata %>% select(-one_of(cell_names)) %>% full_join(tmp[,c("Correct_Subject.ID",cell_names)],by="Correct_Subject.ID")
+
+rm(tmp, input, nimp, nimp2)
+```
+
+Combine cells with low individual counts
+
+```{r}
+imputed_metadata <- imputed_metadata %>% mutate(macs_nk_of_total = macs_nk_cd16hi_of_total + macs_nk_cd56hi_of_total, macs_mono_cd16hi_of_total = macs_mono_int_of_total + macs_mono_nonclass_of_total) 
+```
+
+
+Create design matrix for DGE analysis
+
+```{r}
+imputed_metadata$Centre <- as.factor(imputed_metadata$Centre)
+imputed_metadata$Plate.ID <- as.factor(imputed_metadata$Plate.ID)
+imputed_metadata$Sex <- as.factor(imputed_metadata$Sex)
+
+design_pooled_cc <- model.matrix(~ disorder + Centre + Plate.ID + Sex + Age + macs_b_of_total + macs_cd4_of_total + macs_cd8_of_total + macs_mono_class_of_total + macs_mono_cd16hi_of_total + macs_nk_of_total, data = imputed_metadata)
+
+imputed_metadata_fem <- imputed_metadata %>% filter(Sex == "Female")
+imputed_metadata_fem$Centre <- as.factor(imputed_metadata_fem$Centre)
+imputed_metadata_fem$Plate.ID <- as.factor(imputed_metadata_fem$Plate.ID)
+
+design_female_cc <- model.matrix(~ disorder + Centre + Plate.ID + Age + macs_b_of_total + macs_cd4_of_total + macs_cd8_of_total + macs_mono_class_of_total + macs_mono_cd16hi_of_total + macs_nk_of_total, data = imputed_metadata_fem)
+
+imputed_metadata_male <- imputed_metadata %>% filter(Sex == "Male")
+imputed_metadata_male$Centre <- as.factor(imputed_metadata_male$Centre)
+imputed_metadata_male$Plate.ID <- as.factor(imputed_metadata_male$Plate.ID)
+
+design_male_cc <- model.matrix(~ disorder + Centre + Plate.ID + Age + macs_b_of_total + macs_cd4_of_total + macs_cd8_of_total + macs_mono_class_of_total + macs_mono_cd16hi_of_total +  macs_nk_of_total, data = imputed_metadata_male)
+```
+
+Re-filter and re-normalise count data subset with cell count information
+
+```{r}
+counts_samples_cc <- counts_samples %>% dplyr::select(one_of(dput(as.character(imputed_metadata$sample_id_match))))
+data_filtered_cc<- DGEList(counts = counts_samples_cc, genes = gene_info,  group = imputed_metadata$disorder)
+keep <- filterByExpr(data_filtered_cc)
+data_filtered_cc <- data_filtered_cc[keep, , keep.lib.sizes=FALSE]
+data_filtered_cc <- calcNormFactors(data_filtered_cc)
+data_normalised_cc <- cpm(data_filtered_cc, log = T, prior.count = 0.5)
+
+
+counts_samples_female_cc <- counts_samples %>% dplyr::select(one_of(dput(as.character(imputed_metadata_fem$sample_id_match))))
+data_filtered_female_cc <- DGEList(counts = counts_samples_female_cc, genes = gene_info,  group = imputed_metadata_fem$disorder)
+keep <- filterByExpr(data_filtered_female_cc)
+data_filtered_female_cc <- data_filtered_female_cc[keep, , keep.lib.sizes=FALSE]
+data_filtered_female_cc <- calcNormFactors(data_filtered_female_cc)
+data_normalised_female_cc <- cpm(data_filtered_female_cc, log = T, prior.count = 0.5)
+
+
+counts_samples_male_cc <- counts_samples %>% dplyr::select(one_of(dput(as.character(imputed_metadata_male$sample_id_match))))
+data_filtered_male_cc <- DGEList(counts = counts_samples_male_cc, genes = gene_info,  group = imputed_metadata_male$disorder)
+keep <- filterByExpr(data_filtered_male_cc)
+data_filtered_male_cc <- data_filtered_male_cc[keep, , keep.lib.sizes=FALSE]
+data_filtered_male_cc <- calcNormFactors(data_filtered_male_cc)
+data_normalised_male_cc <- cpm(data_filtered_male_cc, log = T, prior.count = 0.5)
+```
+
+
+Conduct DGE analysis using limma-voom
+
+```{r}
+voom_pooled_cc <- voomWithQualityWeights(data_filtered_cc, design = design_pooled_cc, plot = T)
+voom_fit_cc <- lmFit(voom_pooled_cc, design = design_pooled_cc)
+voom_fit_cc <- eBayes(voom_fit_cc)
+biodep_tt_cc_pooled <- topTable(voom_fit_cc, coef = "disorderMDD", number = nrow(data_filtered_cc))
+results_cc <- decideTests(voom_fit_cc)
+summary(results_cc)
+
+
+voom_m_cc <- voomWithQualityWeights(data_filtered_male_cc, design = design_male_cc, plot = T)
+voom_fit_m_cc <- lmFit(voom_m_cc, design = design_male_cc)
+voom_fit_m_cc <- eBayes(voom_fit_m_cc)
+biodep_tt_cc_m <- topTable(voom_fit_m_cc, coef = "disorderMDD", number = nrow(data_filtered_male_cc))
+results_m_cc <- decideTests(voom_fit_m_cc)
+summary(results_m_cc)
+
+
+voom_f_cc <- voomWithQualityWeights(data_filtered_female_cc, design = design_female_cc, plot = T)
+voom_fit_f_cc <- lmFit(voom_f_cc, design = design_female_cc)
+voom_fit_f_cc <- eBayes(voom_fit_f_cc)
+biodep_tt_cc_f <- topTable(voom_fit_f_cc, coef = "disorderMDD", number = nrow(data_filtered_female_cc))
+results_f_cc <- decideTests(voom_fit_f_cc)
+summary(results_f_cc)
+
+```
+
+---------------------------------
+Data prep for downstream analysis
+---------------------------------
+
+```{r}
+catgs <- imputed_metadata_fem %>% dplyr::select(sample_id_match, disorder, Centre, Plate.ID, Age, macs_b_of_total:macs_mono_class_of_total,  macs_mono_cd16hi_of_total, macs_nk_of_total) 
+catgs[, c(2:4)] <- lapply(catgs[, c(2:4)], factor)
+
+design = model.matrix(~ Centre + Plate.ID + Age +macs_b_of_total+macs_cd4_of_total+macs_cd8_of_total+macs_mono_class_of_total+macs_mono_cd16hi_of_total+macs_nk_of_total, data = catgs)
+mm <- model.matrix(~disorder, data = catgs)
+batch_correct_b_f <- removeBatchEffect(data_normalised_female_cc, covariates = design[,-1], design = mm)
+
+catgs <- imputed_metadata_male %>% dplyr::select(sample_id_match, disorder, Centre, Plate.ID, Age, macs_b_of_total:macs_mono_class_of_total,  macs_mono_cd16hi_of_total, macs_nk_of_total) 
+catgs[, c(2:4)] <- lapply(catgs[, c(2:4)], factor)
+
+design = model.matrix(~ Centre + Plate.ID + Age +macs_b_of_total+macs_cd4_of_total+macs_cd8_of_total+macs_mono_class_of_total+macs_mono_cd16hi_of_total+macs_nk_of_total, data = catgs)
+mm <- model.matrix(~disorder, data = catgs)
+batch_correct_b_m <- removeBatchEffect(data_normalised_male_cc, covariates = design[,-1], design = mm)
+
+catgs <- imputed_metadata %>% dplyr::select(sample_id_match, disorder, Centre, Plate.ID, Sex, Age, macs_b_of_total:macs_mono_class_of_total,  macs_mono_cd16hi_of_total, macs_nk_of_total) 
+catgs[, c(2:4)] <- lapply(catgs[, c(2:4)], factor)
+
+design = model.matrix(~ Centre + Plate.ID + Sex + Age +macs_b_of_total+macs_cd4_of_total+macs_cd8_of_total+macs_mono_class_of_total+macs_mono_cd16hi_of_total+macs_nk_of_total, data = catgs)
+mm <- model.matrix(~disorder, data = catgs)
+batch_correct_b_pooled <- removeBatchEffect(data_normalised_male_cc, covariates = design[,-1], design = mm)
+
+
+metd_b <- imputed_metadata
+
+save(metd_b, batch_correct_b_f, batch_correct_b_m, file = "../for_WGCNA/biodep.Rdata")
+```
+
+
+--------------------
+Sensitivity analysis
+--------------------
+
+
+Prep count data for DGE analysis
+
+```{r}
+metd_sen <- imputed_metadata %>% filter(is.na(BMI.Calculated) == F)
+metd_sen_f <- metd_sen %>% filter(Sex == "Female")
+metd_sen_m <- metd_sen %>% filter(Sex == "Male")
+  
+data_filtered_sens <- data_filtered_cc$counts
+data_filtered_sens_f <- data_filtered_female_cc$counts
+data_filtered_sens_m <- data_filtered_male_cc$counts
+
+data_filtered_sens <- data_filtered_sens %>% as.data.frame(.) %>% dplyr::select(one_of(dput(as.character(metd_sen$sample_id_match))))
+data_filtered_sens_f <- data_filtered_sens_f %>% as.data.frame(.) %>% dplyr::select(one_of(dput(as.character(metd_sen_f$sample_id_match))))
+data_filtered_sens_m <- data_filtered_sens_m %>% as.data.frame(.) %>% dplyr::select(one_of(dput(as.character(metd_sen_m$sample_id_match))))
+
+data_filtered_sens <- DGEList(data_filtered_sens, group = metd_sen$disorder)
+data_filtered_sens <- calcNormFactors(data_filtered_sens)
+data_filtered_sens_f <- DGEList(data_filtered_sens_f, group = metd_sen_f$disorder)
+data_filtered_sens_f <- calcNormFactors(data_filtered_sens_f)
+data_filtered_sens_m <- DGEList(data_filtered_sens_m, group = metd_sen_m$disorder)
+data_filtered_sens_m <- calcNormFactors(data_filtered_sens_m)
+```
+
+Create design matrix
+
+```{r}
+design_sens <- model.matrix(~ disorder + Centre + Plate.ID + Sex + Age + BMI.Calculated + macs_b_of_total + macs_cd4_of_total + macs_cd8_of_total + macs_mono_class_of_total + macs_mono_cd16hi_of_total + macs_nk_of_total, data = metd_sen)
+
+design_sens_m <- model.matrix(~ disorder + Centre + Plate.ID + Age + BMI.Calculated + macs_b_of_total + macs_cd4_of_total + macs_cd8_of_total + macs_mono_class_of_total + macs_mono_cd16hi_of_total + macs_nk_of_total, data = metd_sen_m)
+
+design_sens_f <- model.matrix(~ disorder + Centre + Plate.ID + Age + BMI.Calculated + macs_b_of_total + macs_cd4_of_total + macs_cd8_of_total + macs_mono_class_of_total + macs_mono_cd16hi_of_total + macs_nk_of_total, data = metd_sen_f)
+
+```
+
+```{r}
+voom_pooled_sens <- voomWithQualityWeights(data_filtered_sens, design = design_sens, plot = T)
+voom_fit_sens <- lmFit(voom_pooled_sens, design = design_sens)
+voom_fit_sens <- eBayes(voom_fit_sens)
+biodept_tt_sens_pooled <- topTable(voom_fit_sens, coef = "disorderMDD", number = nrow(data_filtered_sens))
+results_sens <- decideTests(voom_fit_sens)
+summary(results_sens)
+
+
+voom_m_sens <- voomWithQualityWeights(data_filtered_sens_m, design = design_sens_m, plot = T)
+voom_fit_m_sens <- lmFit(voom_m_sens, design = design_sens_m)
+voom_fit_m_sens <- eBayes(voom_fit_m_sens)
+biodep_tt_sens_m <- topTable(voom_fit_m_sens, coef = "disorderMDD", number = nrow(data_filtered_sens_m))
+results_m_sens <- decideTests(voom_fit_m_sens)
+summary(results_m_sens)
+
+
+voom_f_sens <- voomWithQualityWeights(data_filtered_sens_f, design = design_sens_f, plot = T)
+voom_fit_f_sens <- lmFit(voom_f_sens, design = design_sens_f)
+voom_fit_f_sens <- eBayes(voom_fit_f_sens)
+biodep_tt_sens_f <- topTable(voom_fit_f_sens, coef = "disorderMDD", number = nrow(data_filtered_sens_f))
+results_f_sens <- decideTests(voom_fit_f_sens)
+summary(results_f_sens)
+```
+
+
+
+
+
+

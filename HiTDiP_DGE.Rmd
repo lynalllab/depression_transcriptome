@@ -1,0 +1,242 @@
+---
+title: "HiTDiP DGE"
+output: html_notebook
+---
+
+Loading required libraries
+
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(reshape2)
+library(tibble)
+library(limma)
+library(xCell)
+```
+
+-------------------
+Not cell-corrected
+-------------------
+
+Create design matrix for DGE analysis
+
+```{r}
+design_pooled <- model.matrix(~Disorder + Sex + Batch + Age, data = final_metadata)
+
+final_metadata_male <- final_metadata %>% filter(Sex == "Male")
+design_male <- model.matrix(~Disorder + Batch + Age, data = final_metadata_male)
+
+final_metadata_female <- final_metadata %>% filter(Sex =="Female")
+design_female <- model.matrix(~Disorder + Batch + Age, data = final_metadata_female)
+```
+
+Conduct DGE analysis using limma
+
+```{r}
+fit_pooled <- lmFit(eset_fin, design_pooled)
+fit_pooled <- eBayes(fit_pooled, trend = T)
+hitdip_tt_ncc_pooled <- topTable(fit_pooled, coef = "DisorderMDD", number = 42086)
+results <- decideTests(fit_pooled)
+summary(results)
+
+eset_fin_m <- eset_fin[,final_metadata_male$sample_id_match]
+fit_m <- lmFit(eset_fin_m, design_male)
+fit_m <- eBayes(fit_m, trend = T)
+hitdip_tt_ncc_m <- topTable(fit_m, coef = "DisorderMDD", number = 42086)
+results_m <- decideTests(fit_m)
+summary(results_m)
+
+eset_fin_f <- eset_fin[,final_metadata_female$sample_id_match]
+fit_f <- lmFit(eset_fin_f, design_female)
+fit_f <- eBayes(fit_f, trend = T)
+hitdip_tt_ncc_f <- topTable(fit_f, coef = "DisorderMDD", number = 42086)
+results_f <- decideTests(fit_f)
+summary(results_f)
+```
+
+-----------------------
+Cell-corrected analysis
+-----------------------
+
+Calculate cell proportions using xCell
+
+```{r}
+cc_mat <- eset_fin@assayData$exprs %>% as.data.frame() %>% rownames_to_column("PROBEID") %>% left_join(., eset_annotation, by = "PROBEID") %>% column_to_rownames("PROBEID")
+unq_hitdip <- collapseRows(datET = cc_mat[,1:181], rowGroup = cc_mat$SYMBOL, rowID = rownames(cc_mat))
+cc_mat <- unq_hitdip$datETcollapsed %>% as.data.frame() 
+```
+
+Check overlap of at least 5000 gene names (recommended) between xCell database and input
+
+```{r}
+xcell_genes <- xCell.data$genes %>% as.data.frame() %>% setNames("gene_name")
+cc_genes <- rownames(cc_mat) %>% as.data.frame() %>% setNames("gene_name")
+
+venn.diagram(list(HiTDiP_cc_genes = cc_genes$gene_name, xCell = xcell_genes$gene_name), filename = "overlap_genes_with_xCell.tiff")
+```
+
+xCell - non normalisation required for microarray data
+
+xCell calculation
+
+```{r}
+cellchoice_names <- c("B-cells", "CD4+ T-cells", "CD8+ T-cells", "Monocytes", "NK cells", "Basophils", "Eosinophils", "Neutrophils") 
+
+set.seed(12001)
+xcellout_pooled <- xCellAnalysis(expr=as.matrix(cc_mat), genes=rownames(cc_mat),rnaseq=F,
+                                 cell.types.use=cellchoice_names)
+
+
+```
+
+### xCell stats
+code credit M-E Lynall
+
+#significance
+```{r}
+set.seed(12002)
+tmp <- xCellSignifcanceBetaDist(xcellout_pooled, rnaseq=F)
+toselect <- apply(tmp,1,function(x){sum(x<0.1)}>=54) #30% samples
+toselect %>% table 
+xcellsmall_pooled <- xcellout_pooled[toselect,]
+ypos_pooled <- apply(xcellsmall_pooled, 1, function(x){1.3*max(x)})
+ypos_mono <- apply(xcellout_pooled, 1, function(x){1.3*max(x)})
+```
+
+
+```{r}
+xcell_pooled <- melt(xcellsmall_pooled, varnames=c("Celltype","sample"), value.name="proportion")
+xcell_pooled$cond <- final_metadata$Disorder[match(xcell_pooled$sample,final_metadata$sample_id_match)]
+
+anno_df<- compare_means(proportion ~ cond, group.by="Celltype",data=xcell_pooled, method="wilcox.test", paired=FALSE, p.adjust.method = "BH") %>%
+ dplyr::mutate(p.adj = format.pval(p.adj, digits = 1), p = format.pval(p, digits = 1))
+anno_df$y.position <- ypos_pooled
+order <- as.character(data.frame(anno_df %>% arrange(p))$Celltype)
+print(anno_df)
+xcell_pooled$Celltype <- factor(as.character(xcell_pooled$Celltype), levels=order, ordered=T)
+
+#Figure 1
+ggplot(xcell_pooled, aes(x=cond, y=proportion)) + 
+  geom_boxplot(aes(fill=cond),position=position_dodge(), outlier.shape = NA) + theme_bw() + scale_fill_manual(values = c("cadetblue2","cadetblue")) +
+  geom_jitter(color="black", width = 0.2, cex = 0.1) +
+  facet_wrap(~Celltype, scales = "free_y", ncol = 4) + stat_pvalue_manual(data=anno_df, label="p.signif", vjust=1.2)  + labs(x = "", y = "", fill = "Disorder")# Note that p.signif is unadjusted p values
+ggsave("xcell_prop_pooled.pdf" ,width=9, height=4)
+```
+
+
+```{r}
+cc_pooled <- xcellsmall_pooled %>% t() %>% as.data.frame() %>% rownames_to_column("sample_id_match")
+cc_pooled <- cc_pooled %>% mutate(Lymphocytes = `B-cells` + `CD4+ T-cells` + `CD8+ T-cells` + `NK cells`)
+
+cc_mono <- xcellout_pooled %>% t() %>% as.data.frame() %>% rownames_to_column("sample_id_match")
+cc_mono <- cc_mono %>% mutate(Lymphocytes = `B-cells` + `CD4+ T-cells` + `CD8+ T-cells` + `NK cells`)
+```
+
+```{r}
+cc_met <- final_metadata %>% merge(., cc_mono, by = "sample_id_match")
+cc_met_male <- cc_met %>% filter(Sex == "Male")
+cc_met_fem <- cc_met %>% filter(Sex =="Female")
+```
+
+Create design matrix for DGE analysis
+
+```{r}
+design_pooled_cc <- model.matrix(~Disorder + Sex + Batch + Age + Lymphocytes + Monocytes + Eosinophils + Neutrophils, data = cc_met)
+
+design_female_cc <- model.matrix(~Disorder + Batch + Age + Lymphocytes + Monocytes + Eosinophils + Neutrophils, data = cc_met_fem)
+
+design_male_cc <- model.matrix(~Disorder + Batch + Age + Lymphocytes + Monocytes + Eosinophils + Neutrophils, data = cc_met_male)
+```
+
+Conduct DGE analysis using limma
+
+```{r}
+fit_pooled_cc <- lmFit(eset_fin, design_pooled_cc)
+fit_pooled_cc <- eBayes(fit_pooled_cc, trend = T)
+hitdip_tt_cc_pooled <- topTable(fit_pooled_cc, coef = "DisorderMDD", number = 42086)
+results <- decideTests(fit_pooled_cc)
+summary(results)
+
+eset_fin_m <- eset_fin[,cc_met_male$sample_id_match]
+fit_m_cc <- lmFit(eset_fin_m, design_male_cc)
+fit_m_cc <- eBayes(fit_m_cc, trend = T)
+hitdip_tt_cc_m <- topTable(fit_m_cc, coef = "DisorderMDD", number = 42086)
+results_m <- decideTests(fit_m_cc)
+summary(results_m)
+
+eset_fin_f <- eset_fin[,cc_met_fem$sample_id_match]
+fit_f_cc <- lmFit(eset_fin_f, design_female_cc)
+fit_f_cc <- eBayes(fit_f_cc, trend = T)
+hitdip_tt_cc_f <- topTable(fit_f_cc, coef = "DisorderMDD", number = 42086)
+results_f <- decideTests(fit_f_cc)
+summary(results_f)
+```
+
+---------------------------------
+Data prep for downstream analysis
+---------------------------------
+
+```{r}
+catgs <- cc_met_fem %>% dplyr::select(sample_id_match, Disorder, Batch, Age, Lymphocytes:Neutrophils) 
+catgs[, c(2,3)] <- lapply(catgs[, c(2,3)], factor)
+design = model.matrix(~ Batch + Age + Lymphocytes + Monocytes + Eosinophils + Neutrophils, data = catgs)
+mm <- model.matrix(~Disorder, data = catgs)
+norm_data <-  unq_hitdip$datETcollapsed %>% as.data.frame() %>% dplyr::select(one_of(dput(cc_met_fem$sample_id_match))) %>% as.matrix()
+batch_correct_g_f <- removeBatchEffect(norm_data, covariates = design[,-1], design = mm)
+
+catgs <- cc_met_male %>% dplyr::select(sample_id_match, Disorder, Batch, Age, Lymphocytes:Neutrophils) 
+catgs[, c(2,3)] <- lapply(catgs[, c(2,3)], factor)
+design = model.matrix(~ Batch + Age + Lymphocytes + Monocytes + Eosinophils + Neutrophils, data = catgs)
+mm <- model.matrix(~Disorder, data = catgs)
+norm_data <-  unq_hitdip$datETcollapsed %>% as.data.frame() %>% dplyr::select(one_of(dput(cc_met_male$sample_id_match))) %>% as.matrix()
+batch_correct_g_m <- removeBatchEffect(norm_data, covariates = design[,-1], design = mm)
+
+catgs <- cc_met %>% dplyr::select(sample_id_match, Disorder, Batch, Sex, Age, Lymphocytes:Neutrophils) 
+catgs[, c(2,3)] <- lapply(catgs[, c(2,3)], factor)
+design = model.matrix(~ Batch + Sex+ Age + Lymphocytes + Monocytes + Eosinophils + Neutrophils, data = catgs)
+mm <- model.matrix(~Disorder, data = catgs)
+norm_data <-  unq_hitdip$datETcollapsed %>% as.data.frame() %>% dplyr::select(one_of(dput(cc_met$sample_id_match))) %>% as.matrix()
+batch_correct_g_pooled <- removeBatchEffect(norm_data, covariates = design[,-1], design = mm)
+
+metd_g <- cc_met
+
+save(metd_g, batch_correct_g_f, batch_correct_g_m, file = "../for_WGCNA/hitdip.Rdata")
+
+```
+
+--------------------
+Sensitivity analysis
+--------------------
+
+re-run xCell with cellchoicebroad to include "Platelets" -> cc_broad_all
+
+Create design matrix
+```{r}
+metd_sens_p <- cc_met %>% merge(., cc_broad_all, by.x = "sample_id_match", by.y = "X")
+design <- model.matrix(~Disorder + Sex + cohort + Age + `B-cells` + `CD4+ T-cells` + `CD8+ T-cells` + Monocytes + `NK cells` + Eosinophils + Neutrophils + Platelets, data = metd_sens_p)
+design_male <- metd_sens_p %>% filter(sex == "Male") %>% model.matrix(~Disorder + cohort + Age + `B-cells` + `CD4+ T-cells` + `CD8+ T-cells` + Monocytes + `NK cells` + Eosinophils + Neutrophils + Platelets, data = .)
+design_fem <- metd_sens_p %>% filter(sex == "Female") %>% model.matrix(~Disorder + cohort + Age + `B-cells` + `CD4+ T-cells` + `CD8+ T-cells` + Monocytes + `NK cells` + Eosinophils + Neutrophils + Platelets, data = .)
+```
+
+DE run
+
+```{r}
+
+fit_sens_p <- lmFit(eset_fin, design)
+fit_sens_p <- eBayes(fit_sens_p, trend = T)
+
+fit_sens_p_m <- lmFit(eset_fin_m, design_male)
+fit_sens_p_m <- eBayes(fit_sens_p_m, trend = T)
+
+fit_sens_p_f <- lmFit(eset_fin_f, design_fem)
+fit_sens_p_f <- eBayes(fit_sens_p_f, trend = T)
+
+hitdip_tt_sens_p_pooled <- topTable(fit_sens_p, coef = "DisorderMDD", number = 45485)
+hitdip_tt_sens_p_f <- topTable(fit_sens_p_f, coef = "DisorderMDD", number = 45485)
+hitdip_tt_sens_p_m <- topTable(fit_sens_p_m, coef = "DisorderMDD", number = 45485)
+
+```
+
+

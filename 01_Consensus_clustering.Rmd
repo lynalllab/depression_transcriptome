@@ -1,0 +1,408 @@
+---
+title: "data prep for WGCNA"
+output: html_notebook
+---
+
+-----------------
+Loading libraries
+-----------------
+
+
+```{r}
+library(WGCNA)
+library(dplyr)
+library(stringr)
+library(tidyr)
+library(ggplot2)
+library(DESeq2)
+library(limma)
+library(pheatmap)
+library(tibble)
+library(edgeR)
+library(reshape2)
+library(biomaRt)
+library(xCell)
+library(VennDiagram)
+library(corrplot)
+library(mclust)
+library(dendextend)
+
+```
+
+Processing datasets
+
+data has already been filtered for genes with low expression, and has been sex-stratified, and cell count corrected
+
+```{r}
+load("../for_WGCNA/biodep.Rdata", verbose = T)
+batch_correct_b_f <- batch_correct_b_f %>% as.data.frame() %>% rownames_to_column("ensembl_gene_id") %>% merge(., gene_info, by = "ensembl_gene_id") %>% dplyr::select(external_gene_name, X11:X256) %>% column_to_rownames("external_gene_name") %>% as.matrix()
+batch_correct_b_m <- batch_correct_b_m %>% as.data.frame() %>% rownames_to_column("ensembl_gene_id") %>% merge(., gene_info, by = "ensembl_gene_id") %>% dplyr::select(external_gene_name, X233:X255) %>% column_to_rownames("external_gene_name") %>% as.matrix()
+
+load("../for_WGCNA/le.Rdata", verbose = T)
+batch_correct_l_f <- batch_correct_l_f %>% as.data.frame() %>% rownames_to_column("ensembl_gene_id") %>% merge(., gene_info, by = "ensembl_gene_id") %>% dplyr::select(external_gene_name, AA003:AN382) %>% column_to_rownames("external_gene_name") %>% as.matrix()
+batch_correct_l_m <- batch_correct_l_m %>% as.data.frame() %>% rownames_to_column("ensembl_gene_id") %>% merge(., gene_info, by = "ensembl_gene_id") %>% dplyr::select(external_gene_name, AA296:AN965) %>% column_to_rownames("external_gene_name") %>% as.matrix()
+
+load("../for_WGCNA/mostafavi.Rdata", verbose = T)
+batch_correct_m_f <- batch_correct_m_f %>% as.data.frame() %>% rownames_to_column("ensembl_gene_id") %>% merge(., gene_info, by = "ensembl_gene_id") %>% dplyr::select(external_gene_name, LD0001:LD1366) %>% column_to_rownames("external_gene_name") %>% as.matrix()
+batch_correct_m_m <- batch_correct_m_m %>% as.data.frame() %>% rownames_to_column("ensembl_gene_id") %>% merge(., gene_info, by = "ensembl_gene_id") %>% dplyr::select(external_gene_name, LD0003:LD1364) %>% column_to_rownames("external_gene_name") %>% as.matrix()
+
+load("../for_WGCNA/hitdip.Rdata", verbose = T)
+
+load("../for_WGCNA/dbgap.Rdata", verbose = T)
+```
+
+
+Make microarray gene names same where possible if comparing betweeen rna-seq and microarray
+```{r}
+load("../mic_syn.Rdata", verbose = T)
+
+file_names <- ls(pattern = "batch_cor")[c(3:6)] #select microarray datasets
+
+for(i in file_names){
+  temp <- get(i)
+  avg_exps <- rowMeans(temp, na.rm = T)
+  temp <- cbind(as.data.frame(temp), avg_exps) %>% rownames_to_column("SYMBOL") %>% merge(., alt_mic_names, by.x = "SYMBOL", by.y = "mic_gene_name", all.x = T) %>% mutate(fin_gene_name = if_else(is.na(gene_name) == T, SYMBOL, gene_name)) %>% arrange(desc(avg_exps)) %>% distinct(fin_gene_name, .keep_all = T) %>% dplyr::select(-c(SYMBOL, gene_name, avg_exps)) %>% column_to_rownames("fin_gene_name") %>% as.matrix()
+  assign(i, temp, envir = .GlobalEnv)
+}
+
+rm(add_mic_info, alt_mic_names, temp, avg_exps, col_num, rows_nm)
+```
+
+```{r}
+file_names <- ls(pattern = "batch_cor")
+
+gene_list <- rownames(batch_correct_b_f) %>% as.data.frame() %>% setNames("gene_name")
+for(i in file_names[-1]){
+  temp <- get(i)
+  temp_col <- rownames(temp) %>% as.data.frame() %>% setNames("gene_name")
+  gene_list <- merge(gene_list, temp_col, by = "gene_name")
+  }
+
+gene_common_list <- gene_list
+rm(gene_list, temp, temp_col, i)
+```
+
+
+Make final data subset for wgcna
+```{r}
+file_names <- ls(pattern = "batch_cor")
+for (i in file_names){
+  temp <- get(i) %>% as.data.frame()
+  temp <- as.data.frame(temp) %>% filter(rownames(.) %in% gene_common_list$gene_name)
+  temp <- temp[match(gene_common_list$gene_name, rownames(temp)), ]
+  temp <- temp %>% t()
+  assign(i, temp, envir = .GlobalEnv)
+}
+
+rm(temp)
+```
+
+Assess comparability of datasets
+1)correlate measures of average gene expression
+2) and overall connectivity between two data sets.
+ref: https://horvath.genetics.ucla.edu/html/CoexpressionNetwork/JMiller/Tutorial%20document.pdf
+
+First, sft choose
+```{r}
+# Initialize a list to hold the results of scale-free analysis
+powerTables = vector(mode = "list", length = 10)
+# Call the network topology analysis function for each set in turn
+file_names <- ls(pattern = "batch_cor")
+a = 1
+for(i in file_names){
+  temp <- get(i)
+  powerTables[[a]] = list(data = pickSoftThreshold(temp, corFnc = "bicor", networkType = "signed"))
+  a = a+1
+  collectGarbage()
+}
+
+```
+
+```{r}
+comparitive_plots <- function(file_name, sft_list, sex, gene_list = gene_common_list, random5000){
+  a = 1
+  rank_expr <- vector(mode = "list", length = length(file_name))
+  rank_conn <- vector(mode = "list", length = length(file_name))
+  plots_exr <- c()
+  plots_conn <- c()
+  for(i in file_name){
+    temp <- get(i)
+    rank_expr[[a]] <- rank(rowMeans(t(temp)))
+    rank_conn[[a]]<- rank(softConnectivity(temp[,random5000], type = "signed", power = sft_list[a], corFnc = "bicor"))
+    a = a+1
+  }
+  pdf(paste("generalNetworkProperties_", sex, ".pdf", sep =""), height=6, width=12)
+  par(mfrow=c(1,2))
+  b = 1
+  for(i in seq(1,length(file_name),1)){
+    for(j in seq(1,length(file_name),1)){
+      plots_exr[[b]] <- verboseScatterplot(rank_expr[[i]],rank_expr[[j]], xlab=paste("Ranked Expression ", file_name[i], sep =""), ylab=paste("Ranked Expression ", file_name[j], sep =""))
+      plots_conn[[b]] <- verboseScatterplot(rank_conn[[i]], rank_conn[[j]], xlab=paste("Ranked Connectivity ", file_name[i], sep =""), ylab=paste("Ranked Connectivity ", file_name[j], sep =""))
+     b = b+1 
+    }
+  }
+  dev.off()
+}
+```
+
+
+```{r}
+random_5000 <- sample(gene_common_list$gene_name, size = 5000)
+#Females
+file_names <- ls(pattern = "batch_cor")[c(1,5,9,13,17)]
+sft_lists <- c(7,8,6,5,11)
+comparitive_plots(file_name = file_names, sft_list = sft_lists, sex = "female", random5000 = random_5000)
+
+#Male
+file_names <- ls(pattern = "batch_cor")[c(3,7,11,15,19)]
+sft_lists <- c(8,9,9,10,12)
+comparitive_plots(file_name = file_names, sft_list = sft_lists, sex = "male", random5000 = random_5000)
+
+plot_vals  = data.frame(data_name = rep(c("b-d", "b-g", "b-l", "b-m", "d-g", "d-l", "d-m", "g-l", "g-m", "l-m"), each = 2), sex = rep(c("female", "male"), each = 20), variable = rep(c("ex","cn"), times = 20), cors = c(0.46,0.44,0.63,0.5,0.92,0.58,0.68,0.59,0.48,0.38,0.46,0.43,0.54,0.49,0.65,0.35,0.55,0.51,0.7,0.51,0.47,0.46,0.57,0.48,0.91,0.59,0.68,0.64,0.29,0.37,0.49,0.45,0.54,0.48,0.53,0.35,0.25,0.51,0.75,0.56), pvals = c(1e-200,1e-200,1e-200,1e-200,1e-200,1e-200,1e-200,1e-200,1e-200,1.6e-171,1e-200,1e-200,1e-200,1e-200,1e-200,4.8e-144,1e-200,1e-200,1e-200,1e-200,1e-200,1e-200,1e-200,1e-200,1e-200,1e-200,1e-200,1e-200,1e-200,5e-162,1e-200,1e-200,1e-200,1e-200,1e-200,4.8e-144,2.1e-168,1e-200,1e-200,1e-200)) %>% separate(data_name, into = c("x_data_name", "y_data_name"), sep ="-")#values taken from plots
+
+plot_vals_1 <- plot_vals
+any(plot_vals$pvals >= 0.05)
+
+plot_vals %>% filter(sex == "female") %>% ggplot(aes(x = "val_1", y = "val_2", fill=cors, label = round(cors, 3))) + geom_point(shape = 22, size = 12) + facet_grid(y_data_name+variable~x_data_name) + theme_classic(base_size = 14) + labs(x ="", y = "", title = "Female exprs and connectivity correlation") + theme(strip.background = element_rect(fill = "black"), strip.text = element_text(color = "white", face = "bold"), axis.text.x = element_text(angle = 90, colour = "white"), plot.title = element_text(hjust = 0.5)) + scale_fill_continuous(high = "#132B43", low = "#56B1F7") + geom_text(colour = "white")
+ggsave("generalNetworkProperties_female_summary.pdf", width = 8, height = 7)
+
+plot_vals %>% filter(sex == "male") %>% ggplot(aes(x = "val_1", y = "val_2", fill=cors, label = round(cors, 3))) + geom_point(shape = 22, size = 12) + facet_grid(y_data_name+variable~x_data_name) + theme_classic(base_size = 14) + labs(x ="", y = "", title = "Male exprs and connectivity correlation") + theme(strip.background = element_rect(fill = "black"), strip.text = element_text(color = "white", face = "bold"), axis.text.x = element_text(angle = 90, colour = "white"), plot.title = element_text(hjust = 0.5)) + scale_fill_continuous(high = "#132B43", low = "#56B1F7") + geom_text(colour = "white")
+ggsave("generalNetworkProperties_male_summary.pdf", width = 8, height = 7)
+```
+
+Create multiexpr input for WGCNA
+
+```{r}
+multiExpr_fem = list(biodep_f = list(data = batch_correct_b_f), dbgap_f = list(data = batch_correct_d_f), hitdip_f = list(data = batch_correct_g_f), le_f = list(data = batch_correct_l_f), mostafavi_f = list(data = batch_correct_m_f))
+checkSets(multiExpr_fem)
+
+multiExpr_male = list(biodep_m = list(data = batch_correct_b_m), dbgap_m = list(data = batch_correct_d_m), hitdip_m = list(data = batch_correct_g_m), le_m = list(data = batch_correct_l_m), mostafavi_m = list(data = batch_correct_m_m))
+checkSets(multiExpr_male)
+
+enableWGCNAThreads()
+```
+
+```{r}
+file_names <- ls(pattern = "multiExpr_")
+for(i  in file_names){
+  temp <- get(i)
+  check_sample_genes <- goodSamplesGenesMS(temp, verbose = F)
+  print(check_sample_genes$allOK)
+}
+
+for(i in file_names){
+  temp <- get(i)
+  sampleTrees = list()
+  for (set in 1:length(temp)){
+    sampleTrees[[set]] = hclust(dist(temp[[set]]$data), method = "average")
+}
+assign(paste("sample_tree_",i,sep =""), sampleTrees, envir = .GlobalEnv)
+}
+
+rm(sampleTrees)
+```
+
+```{r}
+a = 1
+ablines <- c(62, 90, 75, 58, 96, 55, 90, 200, 65, 88) 
+pdf(file = "SampleClustering.pdf", width = 12, height = 12)
+par(mar = c(0, 4, 2, 0))
+file_names <- ls(pattern = "sample_tree")
+for(i in file_names){
+  temp <- get(i)
+  for (set in 1:length(temp)){
+    plot(temp[[set]], main = paste("Sample clustering for", i), xlab="", sub="", cex = 0.7)  + abline(h = ablines[a], col = "red", lty = 2)
+    a = a+1
+}
+}
+dev.off()
+```
+
+removing outliers
+
+```{r}
+
+labels = cutreeStatic(sample_tree_multiExpr_fem[[1]], cutHeight = 62)
+keep = (labels==1)
+multiExpr_fem[[1]]$data <- multiExpr_fem[[1]]$data[keep, ]
+
+labels = cutreeStatic(sample_tree_multiExpr_fem[[2]], cutHeight = 90)
+keep = (labels==1)
+multiExpr_fem[[2]]$data <- multiExpr_fem[[2]]$data[keep, ]
+
+labels = cutreeStatic(sample_tree_multiExpr_fem[[3]], cutHeight = 75)
+keep = (labels==1)
+multiExpr_fem[[3]]$data <- multiExpr_fem[[3]]$data[keep, ]
+
+labels = cutreeStatic(sample_tree_multiExpr_fem[[4]], cutHeight = 58)
+keep = (labels==1)
+multiExpr_fem[[4]]$data <- multiExpr_fem[[4]]$data[keep, ]
+
+labels = cutreeStatic(sample_tree_multiExpr_fem[[5]], cutHeight = 96)
+keep = (labels==1)
+multiExpr_fem[[5]]$data <- multiExpr_fem[[5]]$data[keep, ]
+
+labels = cutreeStatic(sample_tree_multiExpr_male[[1]], cutHeight = 55)
+keep = (labels==1)
+multiExpr_male[[1]]$data <- multiExpr_male[[1]]$data[keep, ]
+
+labels = cutreeStatic(sample_tree_multiExpr_male[[2]], cutHeight = 90)
+keep = (labels==1)
+multiExpr_male[[2]]$data <- multiExpr_male[[2]]$data[keep, ]
+
+labels = cutreeStatic(sample_tree_multiExpr_male[[4]], cutHeight = 65)
+keep = (labels==1)
+multiExpr_male[[4]]$data <- multiExpr_male[[4]]$data[keep, ]
+
+labels = cutreeStatic(sample_tree_multiExpr_male[[5]], cutHeight = 88)
+keep = (labels==1)
+multiExpr_male[[5]]$data <- multiExpr_male[[5]]$data[keep, ]
+
+
+checkSets(multiExpr_male)
+checkSets(multiExpr_fem)
+```
+
+
+Adding trait information
+
+```{r}
+#Female
+metd_trait <- metd_b %>% filter(Sex == "Female") %>% dplyr::select(sample_id_match, disorder, Age) %>% setNames(c("sample_id_match", "Disorder", "Age"))
+metd_temp <- metd_d %>% filter(sex == "Female") %>% dplyr::select(sample_id_match, Disorder, Age)
+metd_trait <- rbind(metd_trait, metd_temp)
+metd_temp <- metd_g %>% filter(Sex == "Female") %>% dplyr::select(sample_id_match, Disorder, Age)
+metd_trait <- rbind(metd_trait, metd_temp)
+metd_temp <- metd_l %>% filter(sex == "Female") %>% dplyr::select(sample_id_match, Disorder, age) %>% setNames(c("sample_id_match", "Disorder", "Age"))
+metd_trait <- rbind(metd_trait, metd_temp)
+metd_temp <- metd_m %>% filter(Sex == "F") %>% dplyr::select(sample_id_match, Disorder, Age)
+metd_trait <- rbind(metd_trait, metd_temp)
+rm(metd_temp)
+
+# Form a multi-set structure that will hold the clinical traits.
+Traits = vector(mode="list", length = length(multiExpr_fem))
+for (set in 1:length(multiExpr_fem)){
+setSamples = rownames(multiExpr_fem[[set]]$data)
+traitRows = match(setSamples, metd_trait$sample_id_match)
+Traits[[set]] = list(data = metd_trait[traitRows, -1])
+rownames(Traits[[set]]$data) = metd_trait[traitRows, 1]
+}
+collectGarbage()
+
+Traits_fem <- Traits
+
+#Female
+metd_trait <- metd_b %>% filter(Sex == "Male") %>% dplyr::select(sample_id_match, disorder, Age) %>% setNames(c("sample_id_match", "Disorder", "Age"))
+metd_temp <- metd_d %>% filter(sex == "Male") %>% dplyr::select(sample_id_match, Disorder, Age)
+metd_trait <- rbind(metd_trait, metd_temp)
+metd_temp <- metd_g %>% filter(Sex == "Male") %>% dplyr::select(sample_id_match, Disorder, Age)
+metd_trait <- rbind(metd_trait, metd_temp)
+metd_temp <- metd_l %>% filter(sex == "Male") %>% dplyr::select(X, Disorder, age) %>% setNames(c("sample_id_match", "Disorder", "Age"))
+metd_trait <- rbind(metd_trait, metd_temp)
+metd_temp <- metd_m %>% filter(Sex == "M") %>% dplyr::select(sample_id_match, Disorder, Age)
+metd_trait <- rbind(metd_trait, metd_temp)
+rm(metd_temp)
+
+# Form a multi-set structure that will hold the clinical traits.
+Traits = vector(mode="list", length = length(multiExpr_male))
+for (set in 1:length(multiExpr_male)){
+setSamples = rownames(multiExpr_male[[set]]$data)
+traitRows = match(setSamples, metd_trait$sample_id_match)
+Traits[[set]] = list(data = metd_trait[traitRows, -1])
+rownames(Traits[[set]]$data) = metd_trait[traitRows, 1]
+}
+collectGarbage()
+
+Traits_male <- Traits
+
+rm(Traits, metd_trait, traitRows, setSamples)
+```
+
+sft choose for consensus clustering
+
+```{r}
+# Initialize a list to hold the results of scale-free analysis
+powerTables = vector(mode = "list", length = 10)
+# Call the network topology analysis function for each set in turn
+file_names <- ls(pattern = "^multiExpr_")
+a = 1
+for(i in file_names){
+  temp <- get(i)
+  for (set in 1:length(temp)){
+    powerTables[[a]] = list(data = pickSoftThreshold(temp[[set]]$data, corFnc = "bicor", networkType = "signed"))
+    a = a+1
+    collectGarbage()
+    }
+}
+
+```
+
+
+```{r}
+# Plot the results:
+names <- c("b_f","d_f", "g_f", "l_f", "m_f", "b_m", "d_m", "g_m", "l_m", "m_m")
+sets <- rep(c("females", "males"), each = 5)
+all_sft_df <- c()
+for(i in 1:length(powerTables)){
+  sft_df <- powerTables[[i]]$data[[2]] %>% dplyr::mutate(model_fit = -sign(slope) * SFT.R.sq) %>% mutate(set_group = sets[i], groups = names[i])
+  all_sft_df <- rbind(all_sft_df, sft_df)
+}
+
+pdf(file = "scaleFreeAnalysis.pdf", width = 8, height = 6)
+par(mfrow = c(1,2))
+for(i in unique(all_sft_df$set_group)){
+  temp <- all_sft_df %>% filter(set_group == i)
+  p <- ggplot(temp, aes(x = Power, y = model_fit, label = Power, shape = groups)) + geom_point(colour = "black") + geom_text(nudge_y = 0.05) + scale_shape_manual(values = c(0,1,8,17,19)) +
+  geom_hline(yintercept = 0.80, col = "red") +
+  ylim(c(min(temp$model_fit), 1.05)) +
+  xlab("Soft Threshold (power)") + ylab("Scale Free Topology Model Fit, signed R^2") + ggtitle(paste("Scale independence: (soft power) ", i , sep = "")) + theme_classic()
+  p2 <- ggplot(temp, aes(x = Power, y = mean.k., label = Power, shape = groups)) + geom_point(colour = "black") + geom_text(nudge_y = 500) + scale_shape_manual(values = c(0,1,8,17,19)) +
+  geom_hline(yintercept = 100, col = "red", lty = 2) +
+  geom_hline(yintercept = 30, col = "red", lty = 2) +
+  xlab("Soft Threshold (power)") + ylab("Mean connectivity") + ggtitle(paste("Mean Connectivity: (mean k) ", i, sep = "")) + theme_classic()
+  
+  print(p)
+  print(p2)
+}
+dev.off()
+
+```
+
+
+WGCNA consensus clustering 
+
+```{r}
+net_fem <- blockwiseConsensusModules(multiExpr = multiExpr_fem, checkMissingData = T, maxBlockSize = 20000, randomSeed = 10001, corType = "bicor", maxPOutliers = 0.05, power = 12, networkType = "signed", TOMType = "signed", deepSplit = 2, minModuleSize = 75, reassignThresholdPS = 0, mergeCutHeight = 0.25, numericLabels = TRUE, pamRespectsDendro = FALSE, saveTOMs = FALSE, nThreads = 25, verbose = 3)
+
+net_male <- blockwiseConsensusModules(multiExpr = multiExpr_male, checkMissingData = T, maxBlockSize = 20000, randomSeed = 10004, corType = "bicor", maxPOutliers = 0.05, power = 10, networkType = "signed", TOMType = "signed", deepSplit = 2, minModuleSize = 75, reassignThresholdPS = 0, mergeCutHeight = 0.25, numericLabels = TRUE, pamRespectsDendro = FALSE, saveTOMs = FALSE, nThreads = 25, verbose = 3)
+```
+
+
+```{r}
+mergedColors_fem <- labels2colors(net_fem$colors) %>% as.data.frame()
+mergedColors_male <- labels2colors(net_male$colors) %>% as.data.frame() %>% setNames("colours") %>%
+  mutate(colour_new = case_when(colours == "purple" ~ "magenta",
+                                colours == "magenta" ~ "yellow",
+                                colours == "blue" ~ "pink",
+                                colours == "turquoise" ~ "brown", 
+                                colours == "green" ~ "purple",
+                                colours == "pink" ~ "blue",
+                                colours == "brown" ~ "red",
+                                colours == "yellow" ~ "green",
+                                colours == "red" ~ "turquoise", 
+                                TRUE ~ colours))
+
+pdf(file = "module_tree_cnt_mdd_colour_matched.pdf", width = 8, height = 6)
+mergedColors_f = as.vector(mergedColors_fem$.)
+plotDendroAndColors(net_fem$dendrograms[[1]], mergedColors_f[net_fem$blockGenes[[1]]],
+                    "Module colors \n Female",
+                    dendroLabels = FALSE, hang = 0.03,
+                    addGuide = TRUE, guideHang = 0.05)
+mergedColors_m = as.vector(mergedColors_male$colour_new)
+plotDendroAndColors(net_male$dendrograms[[1]], mergedColors_m[net_male$blockGenes[[1]]],
+                    "Module colors \n Male",
+                    dendroLabels = FALSE, hang = 0.03,
+                    addGuide = TRUE, guideHang = 0.05)
+dev.off()
+```
+

@@ -1,0 +1,319 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+Consensus clustering
+
+sex-stratified batch corrected (+cc) RNA-seq and microarray separate (driven by mostafavi and dbgap?) -> to identify shared modules between two or more networks
+
+Followed by module preservation analysis between two sets (rna-seq and microarray) of males and females, and between the two technologies -> measures how much eigengene correlation varies among data sets
+
+-----------------
+Loading libraries
+-----------------
+
+```{r}
+library(WGCNA)
+library(dplyr)
+library(stringr)
+library(tidyr)
+library(ggplot2)
+library(DESeq2)
+library(limma)
+library(pheatmap)
+library(tibble)
+library(edgeR)
+library(reshape2)
+library(biomaRt)
+library(xCell)
+library(VennDiagram)
+library(corrplot)
+library(mclust)
+library(dendextend)
+```
+
+-----------------
+Only CNT samples
+-----------------
+
+```{r}
+cnt_names <- metd_b %>% filter(disorder == "CNT")
+batch_correct_b_f_cnt <- subset(batch_correct_b_f, rownames(batch_correct_b_f) %in% cnt_names$sample_id_match)
+batch_correct_b_m_cnt <- subset(batch_correct_b_m, rownames(batch_correct_b_m) %in% cnt_names$sample_id_match)
+
+cnt_names <- metd_d %>% filter(Disorder == "CNT")
+batch_correct_d_f_cnt <- subset(batch_correct_d_f, rownames(batch_correct_d_f) %in% cnt_names$sample_id_match)
+batch_correct_d_m_cnt <- subset(batch_correct_d_m, rownames(batch_correct_d_m) %in% cnt_names$sample_id_match)
+
+cnt_names <- metd_g %>% filter(Disorder == "CNT")
+batch_correct_g_f_cnt <- subset(batch_correct_g_f, rownames(batch_correct_g_f) %in% cnt_names$sample_id_match)
+batch_correct_g_m_cnt <- subset(batch_correct_g_m, rownames(batch_correct_g_m) %in% cnt_names$sample_id_match)
+
+cnt_names <- metd_l %>% filter(Disorder == "CNT")
+batch_correct_l_f_cnt <- subset(batch_correct_l_f, rownames(batch_correct_l_f) %in% cnt_names$sample_id_match)
+batch_correct_l_m_cnt <- subset(batch_correct_l_m, rownames(batch_correct_l_m) %in% cnt_names$sample_id_match)
+
+cnt_names <- metd_m %>% filter(Disorder == "CNT")
+batch_correct_m_f_cnt <- subset(batch_correct_m_f, rownames(batch_correct_m_f) %in% cnt_names$sample_id_match)
+batch_correct_m_m_cnt <- subset(batch_correct_m_m, rownames(batch_correct_m_m) %in% cnt_names$sample_id_match)
+```
+
+First, sft choose
+```{r}
+# Initialize a list to hold the results of scale-free analysis
+powerTables = vector(mode = "list", length = 10)
+# Call the network topology analysis function for each set in turn
+file_names <- ls(pattern = "_cnt")
+a = 1
+for(i in file_names){
+  temp <- get(i)
+  powerTables[[a]] = list(data = pickSoftThreshold(temp, corFnc = "bicor", networkType = "signed"))
+  a = a+1
+  collectGarbage()
+}
+
+```
+
+```{r}
+comparitive_plots <- function(file_name, sft_list, sex, gene_list = gene_common_list, random5000){
+  a = 1
+  rank_expr <- vector(mode = "list", length = length(file_name))
+  rank_conn <- vector(mode = "list", length = length(file_name))
+  plots_exr <- c()
+  plots_conn <- c()
+  for(i in file_name){
+    temp <- get(i)
+    rank_expr[[a]] <- rank(rowMeans(t(temp)))
+    rank_conn[[a]]<- rank(softConnectivity(temp[,random5000], type = "signed", power = sft_list[a], corFnc = "bicor"))
+    a = a+1
+  }
+  pdf(paste("generalNetworkProperties_cnt_", sex, ".pdf", sep =""), height=6, width=12)
+  par(mfrow=c(1,2))
+  b = 1
+  for(i in seq(1,length(file_name),1)){
+    for(j in seq(1,length(file_name),1)){
+      plots_exr[[b]] <- verboseScatterplot(rank_expr[[i]],rank_expr[[j]], xlab=paste("Ranked Expression ", file_name[i], sep =""), ylab=paste("Ranked Expression ", file_name[j], sep =""))
+      plots_conn[[b]] <- verboseScatterplot(rank_conn[[i]], rank_conn[[j]], xlab=paste("Ranked Connectivity ", file_name[i], sep =""), ylab=paste("Ranked Connectivity ", file_name[j], sep =""))
+     b = b+1 
+    }
+  }
+  dev.off()
+}
+```
+
+
+
+```{r}
+#Females
+file_names <- ls(pattern = "_cnt")[c(1,3,5,7,9)]
+sft_lists <- c(12,14,6,12,16)
+comparitive_plots(file_name = file_names, sft_list = sft_lists, sex = "female", random5000 = random_5000)
+
+#Male
+file_names <- ls(pattern = "_cnt")[c(2,4,6,8,10)]
+sft_lists <- c(6,9,14,11,12)
+comparitive_plots(file_name = file_names, sft_list = sft_lists, sex = "male", random5000 = random_5000)
+
+
+plot_vals  = data.frame(data_name = rep(c("b-d", "b-g", "b-l", "b-m", "d-g", "d-l", "d-m", "g-l", "g-m", "l-m"), each = 2), sex = rep(c("female", "male"), each = 20), variable = rep(c("ex","cn"), times = 20), cors = c(0.47,0.4,0.63,0.41,0.92,0.46,0.69,0.49,0.48,0.31,0.46,0.4,0.54,0.49,0.65,0.3,0.55,0.43,0.69,0.45,0.47,0.35,0.57,0.33,0.91,0.38,0.69,0.53,0.29,0.28,0.5,0.44,0.54,0.48,0.52,0.26,0.25,0.38,0.76,0.54), pvals = c(1e-200,1.7e-191,1e-200,1e-200,1e-200,1e-200,1e-200,1e-200,1e-200,8e-112,1e-200,1.7e-191,1e-200,1e-200,1e-200,1.7e-104,1e-200,1e-200,1e-200,1e-200,1e-200,4.8e-144,1e-200,2.5e-127,1e-200,1.6e-171,1e-200,1e-200,1e-200,9.9e-91,1e-200,1e-200,1e-200,1e-200,1e-200,4.7e-78,2.1e-168,1.6e-171,1e-200,1e-200)) %>% separate(data_name, into = c("x_data_name", "y_data_name"), sep ="-")
+plot_vals_2 <- plot_vals
+any(plot_vals$pvals >= 0.05) 
+
+plot_vals %>% filter(sex == "female") %>% ggplot(aes(x = "val_1", y = "val_2", fill=cors, label = round(cors, 3))) + geom_point(shape = 22, size = 12) + facet_grid(y_data_name+variable~x_data_name) + theme_classic(base_size = 14) + labs(x ="", y = "", title = "Female exprs and connectivity correlation") + theme(strip.background = element_rect(fill = "black"), strip.text = element_text(color = "white", face = "bold"), axis.text.x = element_text(angle = 90, colour = "white"), plot.title = element_text(hjust = 0.5)) + scale_fill_continuous(high = "#132B43", low = "#56B1F7") + geom_text(colour = "white")
+ggsave("generalNetworkProperties_cnt_female_summary.pdf", width = 8, height = 7)
+
+plot_vals %>% filter(sex == "male") %>% ggplot(aes(x = "val_1", y = "val_2", fill=cors, label = round(cors, 3))) + geom_point(shape = 22, size = 12) + facet_grid(y_data_name+variable~x_data_name) + theme_classic(base_size = 14) + labs(x ="", y = "", title = "Male exprs and connectivity correlation") + theme(strip.background = element_rect(fill = "black"), strip.text = element_text(color = "white", face = "bold"), axis.text.x = element_text(angle = 90, colour = "white"), plot.title = element_text(hjust = 0.5)) + scale_fill_continuous(high = "#132B43", low = "#56B1F7") + geom_text(colour = "white")
+ggsave("generalNetworkProperties_cnt_male_summary.pdf", width = 8, height = 7)
+```
+
+Datasets comparable based on significant p and positive correlation
+
+```{r}
+pdf("comparison_expr_conn.pdf", width = 7, height = 6)
+
+temp_1 <- plot_vals_1 %>% filter(variable == "ex") %>% mutate(class = "cnt_mdd")
+temp_2 <- plot_vals_2 %>% filter(variable == "ex") %>% mutate(class = "cnt")
+
+temp <- rbind(temp_1, temp_2) %>% mutate(groups = paste(x_data_name, y_data_name, sep = "-")) %>% filter(groups %in% c("b-d", "b-g", "b-l", "b-m", "d-g", "d-l", "d-m", "g-l", "g-m", "l-m"))
+
+check <- temp %>% filter(sex =="female")
+ordered_comp <- reorder(check$groups, -check$cors)
+ordered_comp <- levels(ordered_comp)
+
+temp %>% filter(sex == "female") %>% ggplot(aes(x = factor(groups, levels = ordered_comp), y = cors, fill = class, group = groups)) + geom_point(colour = "black", cex = 5, alpha = 0.5, pch = 21) + geom_line() + theme_classic() + labs(title = "expression f") + scale_fill_manual(values = c("dodgerblue3", "cadetblue3")) + ylim(0.0, 1.0) + geom_hline(yintercept=1, linetype="dashed", color = "brown", size=0.5)
+temp %>% filter(sex == "male") %>% ggplot(aes(x = factor(groups, levels = ordered_comp), y = cors, fill = class, group = groups)) + geom_point(colour = "black", cex = 5, alpha = 0.5, pch = 21) + geom_line() + theme_classic() + labs(title = "expression m") + scale_fill_manual(values = c("dodgerblue3", "cadetblue3")) + ylim(0.0, 1.0) + geom_hline(yintercept=1, linetype="dashed", color = "brown", size=0.5)
+
+temp_1 <- plot_vals_1 %>% filter(variable == "cn") %>% mutate(class = "cnt_mdd")
+temp_2 <- plot_vals_2 %>% filter(variable == "cn") %>% mutate(class = "cnt")
+
+temp <- rbind(temp_1, temp_2) %>% mutate(groups = paste(x_data_name, y_data_name, sep = "-")) %>% filter(groups %in% c("b-d", "b-g", "b-l", "b-m", "d-g", "d-l", "d-m", "g-l", "g-m", "l-m"))
+
+temp %>% filter(sex =="female") %>% ggplot(aes(x = factor(groups, levels = ordered_comp), y = cors, fill = class, group = groups)) + geom_point(colour = "black", cex = 5, alpha = 0.5, pch = 21) + geom_line() + theme_classic() + labs(title = "connectivity f") + scale_fill_manual(values = c("dodgerblue3", "cadetblue3")) + ylim(0.0, 1.0) + geom_hline(yintercept=1, linetype="dashed", color = "brown", size=0.5)
+temp %>% filter(sex =="male") %>% ggplot(aes(x = factor(groups, levels = ordered_comp), y = cors, fill = class, group = groups)) + geom_point(colour = "black", cex = 5, alpha = 0.5, pch = 21) + geom_line() + theme_classic() + labs(title = "connectivity m") + scale_fill_manual(values = c("dodgerblue3", "cadetblue3")) + ylim(0.0, 1.0) + geom_hline(yintercept=1, linetype="dashed", color = "brown", size=0.5)
+
+temp_1 <- plot_vals_1 %>% filter(variable == "ex") 
+temp_2 <- plot_vals_1 %>% filter(variable == "cn") 
+
+temp <- rbind(temp_1, temp_2) %>% mutate(groups = paste(x_data_name, y_data_name, sep = "-")) %>% filter(groups %in% c("b-d", "b-g", "b-l", "b-m", "d-g", "d-l", "d-m", "g-l", "g-m", "l-m"))
+
+temp %>% filter(sex == "female") %>% ggplot(aes(x = factor(groups, levels = ordered_comp), y = cors, fill = variable, group = groups)) + geom_point(colour = "black", cex = 5, alpha = 0.5, pch = 21) + geom_line() + theme_classic() + labs(title = "CNT-MDD expression-connectivity f") + scale_fill_manual(values = c("yellowgreen", "darkgreen")) + ylim(0.0, 1.0) + geom_hline(yintercept=1, linetype="dashed", color = "brown", size=0.5)
+temp %>% filter(sex == "male") %>% ggplot(aes(x = factor(groups, levels = ordered_comp), y = cors, fill = variable, group = groups)) + geom_point(colour = "black", cex = 5, alpha = 0.5, pch = 21) + geom_line() + theme_classic() + labs(title = "CNT-MDD expression-connectivity m") + scale_fill_manual(values = c("yellowgreen", "darkgreen")) + ylim(0.0, 1.0) + geom_hline(yintercept=1, linetype="dashed", color = "brown", size=0.5)
+
+temp_1 <- plot_vals_2 %>% filter(variable == "ex") 
+temp_2 <- plot_vals_2 %>% filter(variable == "cn") 
+
+temp <- rbind(temp_1, temp_2) %>% mutate(groups = paste(x_data_name, y_data_name, sep = "-")) %>% filter(groups %in% c("b-d", "b-g", "b-l", "b-m", "d-g", "d-l", "d-m", "g-l", "g-m", "l-m"))
+
+temp %>% filter(sex =="female") %>% ggplot(aes(x = factor(groups, levels = ordered_comp), y = cors, fill = variable, group = groups)) + geom_point(colour = "black", cex = 5, alpha = 0.5, pch = 21) + geom_line() + theme_classic() + labs(title = "CNT expression-connectivity f") + scale_fill_manual(values = c("yellowgreen", "darkgreen")) + ylim(0.0, 1.0) + geom_hline(yintercept=1, linetype="dashed", color = "brown", size = 0.5)
+temp %>% filter(sex =="male") %>% ggplot(aes(x = factor(groups, levels = ordered_comp), y = cors, fill = variable, group = groups)) + geom_point(colour = "black", cex = 5, alpha = 0.5, pch = 21) + geom_line() + theme_classic() + labs(title = "CNT expression-connectivity m") + scale_fill_manual(values = c("yellowgreen", "darkgreen")) + ylim(0.0, 1.0) + geom_hline(yintercept=1, linetype="dashed", color = "brown", size = 0.5)
+
+dev.off()
+
+rm(plot_vals, plot_vals_1, plot_vals_2, temp, temp_1, temp_2)
+```
+
+creat multiexpr
+
+```{r}
+multiExpr_cnt_fem = list(biodep_f = list(data = batch_correct_b_f_cnt), dbgap_f = list(data = batch_correct_d_f_cnt), hitdip_f = list(data = batch_correct_g_f_cnt), le_f = list(data = batch_correct_l_f_cnt), mostafavi_f = list(data = batch_correct_m_f_cnt))
+checkSets(multiExpr_cnt_fem)
+
+multiExpr_cnt_male = list(biodep_m = list(data = batch_correct_b_m_cnt), dbgap_m = list(data = batch_correct_d_m_cnt), hitdip_m = list(data = batch_correct_g_m_cnt), le_m = list(data = batch_correct_l_m_cnt), mostafavi_m = list(data = batch_correct_m_m_cnt))
+checkSets(multiExpr_cnt_male)
+```
+
+```{r}
+file_names <- ls(pattern = "multiExpr_cnt")
+for(i  in file_names){
+  temp <- get(i)
+  check_sample_genes <- goodSamplesGenesMS(temp, verbose = F)
+  print(check_sample_genes$allOK)
+}
+
+for(i in file_names){
+  temp <- get(i)
+  sampleTrees = list()
+  for (set in 1:length(temp)){
+    sampleTrees[[set]] = hclust(dist(temp[[set]]$data), method = "average")
+}
+assign(paste("sample_tree_",i,sep =""), sampleTrees, envir = .GlobalEnv)
+}
+
+rm(sampleTrees)
+```
+
+```{r}
+a = 1
+ablines <- c(56, 90, 75, 200, 78, 200, 90, 200, 60, 80) 
+pdf(file = "SampleClustering_cnt.pdf", width = 12, height = 12)
+par(mar = c(0, 4, 2, 0))
+file_names <- ls(pattern = "sample_tree_multiExpr_cnt")
+for(i in file_names){
+  temp <- get(i)
+  for (set in 1:length(temp)){
+    plot(temp[[set]], main = paste("Sample clustering for", i), xlab="", sub="", cex = 0.7)  + abline(h = ablines[a], col = "red", lty = 2)
+    a = a+1
+}
+}
+dev.off()
+```
+
+removing outliers
+
+```{r}
+
+labels = cutreeStatic(sample_tree_multiExpr_cnt_fem[[1]], cutHeight = 56)
+keep <- c(TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, FALSE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, FALSE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE)
+multiExpr_cnt_fem[[1]]$data <- multiExpr_cnt_fem[[1]]$data[keep, ]
+
+labels = cutreeStatic(sample_tree_multiExpr_cnt_fem[[2]], cutHeight = 90)
+keep = (labels==1)
+multiExpr_cnt_fem[[2]]$data <- multiExpr_cnt_fem[[2]]$data[keep, ]
+
+labels = cutreeStatic(sample_tree_multiExpr_cnt_fem[[3]], cutHeight = 75)
+keep <- c(TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, FALSE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE)
+multiExpr_cnt_fem[[3]]$data <- multiExpr_cnt_fem[[3]]$data[keep, ]
+
+labels = cutreeStatic(sample_tree_multiExpr_cnt_fem[[5]], cutHeight = 78)
+keep = (labels==1)
+multiExpr_cnt_fem[[5]]$data <- multiExpr_cnt_fem[[5]]$data[keep, ]
+
+
+labels = cutreeStatic(sample_tree_multiExpr_cnt_male[[2]], cutHeight = 90)
+keep = (labels==1)
+multiExpr_cnt_male[[2]]$data <- multiExpr_cnt_male[[2]]$data[keep, ]
+
+labels = cutreeStatic(sample_tree_multiExpr_cnt_male[[4]], cutHeight = 60)
+keep <- c(TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, FALSE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, FALSE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE)
+multiExpr_cnt_male[[4]]$data <- multiExpr_cnt_male[[4]]$data[keep, ]
+
+labels = cutreeStatic(sample_tree_multiExpr_cnt_male[[5]], cutHeight = 80)
+keep = (labels==1)
+multiExpr_cnt_male[[5]]$data <- multiExpr_cnt_male[[5]]$data[keep, ]
+
+
+checkSets(multiExpr_cnt_male)
+checkSets(multiExpr_cnt_fem)
+```
+
+sft choose for consensus
+
+```{r}
+# Initialize a list to hold the results of scale-free analysis
+powerTables = vector(mode = "list", length = 10)
+# Call the network topology analysis function for each set in turn
+file_names <- ls(pattern = "^multiExpr_cnt")
+a = 1
+for(i in file_names){
+  temp <- get(i)
+  for (set in 1:length(temp)){
+    powerTables[[a]] = list(data = pickSoftThreshold(temp[[set]]$data, corFnc = "bicor", networkType = "signed"))
+    a = a+1
+    collectGarbage()
+    }
+}
+
+```
+
+
+```{r}
+# Plot the results:
+names <- c("b_f","d_f", "g_f", "l_f", "m_f", "b_m", "d_m", "g_m", "l_m", "m_m")
+sets <- rep(c("females", "males"), each = 5)
+all_sft_df <- c()
+for(i in 1:length(powerTables)){
+  sft_df <- powerTables[[i]]$data[[2]] %>% dplyr::mutate(model_fit = -sign(slope) * SFT.R.sq) %>% mutate(set_group = sets[i], groups = names[i])
+  all_sft_df <- rbind(all_sft_df, sft_df)
+}
+
+pdf(file = "scaleFreeAnalysis_cnt.pdf", width = 8, height = 6)
+par(mfrow = c(1,2))
+for(i in unique(all_sft_df$set_group)){
+  temp <- all_sft_df %>% filter(set_group == i)
+  p <- ggplot(temp, aes(x = Power, y = model_fit, label = Power, shape = groups)) + geom_point(colour = "black") + geom_text(nudge_y = 0.05) + scale_shape_manual(values = c(0,1,8,17,19)) +
+  geom_hline(yintercept = 0.80, col = "red") +
+  ylim(c(min(temp$model_fit), 1.05)) +
+  xlab("Soft Threshold (power)") + ylab("Scale Free Topology Model Fit, signed R^2") + ggtitle(paste("Scale independence: (soft power) ", i , sep = "")) + theme_classic()
+  p2 <- ggplot(temp, aes(x = Power, y = mean.k., label = Power, shape = groups)) + geom_point(colour = "black") + geom_text(nudge_y = 500) + scale_shape_manual(values = c(0,1,8,17,19)) +
+  geom_hline(yintercept = 100, col = "red", lty = 2) +
+  geom_hline(yintercept = 30, col = "red", lty = 2) +
+  xlab("Soft Threshold (power)") + ylab("Mean connectivity") + ggtitle(paste("Mean Connectivity: (mean k) ", i, sep = "")) + theme_classic()
+  
+  print(p)
+  print(p2)
+}
+dev.off()
+
+```
+
+
+WGCNA consensus clustering 
+
+```{r}
+net_cnt_fem <- blockwiseConsensusModules(multiExpr = multiExpr_cnt_fem, checkMissingData = T, maxBlockSize = 20000, randomSeed = 10001, corType = "bicor", maxPOutliers = 0.05, power = 12, networkType = "signed", TOMType = "signed", deepSplit = 2, minModuleSize = 75, reassignThresholdPS = 0, mergeCutHeight = 0.25, numericLabels = TRUE, pamRespectsDendro = FALSE, saveTOMs = FALSE, nThreads = 25, verbose = 3)
+
+net_cnt_male <- blockwiseConsensusModules(multiExpr = multiExpr_cnt_male, checkMissingData = T, maxBlockSize = 20000, randomSeed = 10004, corType = "bicor", maxPOutliers = 0.05, power = 10, networkType = "signed", TOMType = "signed", deepSplit = 2, minModuleSize = 75, reassignThresholdPS = 0, mergeCutHeight = 0.25, numericLabels = TRUE, pamRespectsDendro = FALSE, saveTOMs = FALSE, nThreads = 25, verbose = 3)
+```
+
+

@@ -1,0 +1,109 @@
+---
+title: "dbGaP data processing"
+output: html_notebook
+---
+
+Loading required libraries
+
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(reshape2)
+library(tibble)
+library(affy) #1.68.0
+library(hgu219.db) #3.2.3
+library(arrayQualityMetrics) #3.46.0
+library(jetset) #3.4.0
+```
+
+
+Read metadata and normalised expression data
+
+```{r}
+final_metadata <- read.table("dbgap_metadata.txt", stringsAsFactors = F, header = T, sep = "\t") %>% mutate(Disorder = if_else(MDD == 1, "MDD", "CNT"), sample_id_match = paste("X",SAMPID, sep ="")) 
+metadata <- metadata[,-5] #removing MDD column
+metadata[,c(2,3,5,8,9)] <- lapply(metadata[,c(2,3,5,8,9)], factor)
+metadata[,c(4,6,7)] <- lapply(metadata[,c(4,6,7)], as.numeric)
+
+
+dbgap_data <- read.table("normalised_expression.txt", header = T, stringsAsFactors = F, sep = "\t", fill = T)
+```
+
+Create eset and phenodata
+
+```{r}
+phenodata <- final_metadata %>% column_to_rownames("sample_id_match") %>% dplyr::select(-SAMPID) %>% AnnotatedDataFrame()
+eset <- ExpressionSet(assayData = as.matrix(dbgap_data), phenoData = phenodata, annotation = "hgu219.db")
+```
+
+Add gene annotations and removed unannotated probes and probes that match to multiple genes
+
+```{r}
+eset_annotation <- AnnotationDbi::select(hgu219.db, keys = (featureNames(eset)), columns = c("SYMBOL", "GENENAME"), keytype = "PROBEID")
+
+ids_multi_map <- eset_annotation %>% group_by(PROBEID) %>% summarise(no_of_matches = n_distinct(SYMBOL)) %>% filter(no_of_matches > 1) %>% ungroup() %>% dplyr::select(PROBEID)
+ids_unannoted <- eset_annotation %>% filter(is.na(SYMBOL) == T) %>% dplyr::select(PROBEID)  
+
+ids_to_remove <- rbind(ids_multi_map, ids_unannoted)
+
+ids_to_exclude <- (featureNames(eset) %in% ids_to_rem$PROBEID)
+```
+
+```{r}
+eset_2 <- subset(eset, !ids_to_exclude)
+validObject(eset_2)
+
+fData(eset_2)$PROBEID <- rownames(fData(eset_2))
+
+fData(eset_2) <- left_join(fData(eset_2), eset_annotation)
+rownames(fData(eset_2)) <- fData(eset_2)$PROBEID
+```
+
+Quality control using arrayQualityMetrics
+
+```{r}
+#doing them separately
+
+preparedData <- prepdata(expressionset = eset_2, intgroup = "Disorder", do.logtransform = F)
+
+#Outlier 1:
+library(genefilter)
+m   = genefilter::dist2(preparedData$M)
+out = outliers(m, method = "sum")
+out@description = c("sum of distances to other arrays <i>S<sub>a</sub></i>", "data-driven")
+
+#Outlier 2:
+out2 = outliers(preparedData$M, method = "KS")
+out2@description = c("Kolmogorov-Smirnov statistic <i>K<sub>a</sub></i>", "data-driven")
+
+#Outlier 3:
+ma = aqm.maplot(preparedData)
+#no outliers identified using third method
+
+outlier1 <- out@which %>% as.data.frame() %>% rownames_to_column() %>% setNames(c("sample_id", "stat"))
+outlier2 <- out2@which %>% as.data.frame() %>% rownames_to_column() %>% setNames(c("sample_id", "stat"))
+outliers <- rbind(outlier1, outlier2) %>% dplyr::select(sample_id) %>% distinct(sample_id)
+
+eset_3 = eset_2[, !sampleNames(eset_2) %in% final_outliers$samp_name]
+validObject(eset_3)
+
+
+rm(outlier1, outlier2)
+```
+
+Create final dataset
+
+```{r}
+eset_fin <- eset_3
+validObject(eset_fin)
+
+fData(eset_fin)$PROBEID <- rownames(fData(eset_fin))
+
+fData(eset_fin) <- left_join(fData(eset_fin), eset_annotation)
+rownames(fData(eset_fin)) <- fData(eset_fin)$PROBEID  
+
+final_metadata <- phenoData(eset_3)@data %>% mutate(sex = as.factor(if_else(Sex == "1", "Male", "Female")))
+```
+

@@ -1,0 +1,762 @@
+---
+title: "WGCNA consensus clustering"
+output: html_notebook
+---
+
+-----------------
+Loading libraries
+-----------------
+
+
+```{r}
+library(WGCNA)
+library(dplyr)
+library(stringr)
+library(tidyr)
+library(ggplot2)
+library(ggpubr)
+library(DESeq2)
+library(limma)
+library(pheatmap)
+library(tibble)
+library(edgeR)
+library(reshape2)
+library(biomaRt)
+library(xCell)
+library(VennDiagram)
+library(corrplot)
+library(mclust)
+library(dendextend)
+library(anRichment)
+library(anRichmentMethods)
+library(clusterProfiler)
+```
+
+Using GO terms
+
+```{r}
+entrez = convert2entrez(organism = "human", symbol = gene_common_list$gene_name)
+```
+
+```{r}
+mergedColors_f = labels2colors(net_fem$colors)
+mergedColors_m = labels2colors(net_male$colors)
+
+me_names_f = net_fem$colors %>% as.data.frame() %>% setNames("colour_code") %>% mutate(MEs = paste("ME", colour_code,sep="")) %>% rownames_to_column("genes") %>% cbind(., mergedColors_f)
+me_names_m = net_male$colors %>% as.data.frame() %>% setNames("colour_code") %>% mutate(MEs = paste("ME", colour_code,sep="")) %>% rownames_to_column("genes") %>% cbind(., mergedColors_m)
+
+entrez_f <- entrez %>% as.data.frame() %>% cbind(mergedColors_f, me_names_f$MEs) %>% setNames(c("genes", "colours", "MEs"))
+entrez_f = entrez_f[ is.finite(entrez_f$genes), ]
+entrez_m <- entrez %>% as.data.frame() %>% cbind(mergedColors_m, me_names_m$MEs) %>% setNames(c("genes", "colours", "MEs"))
+entrez_m = entrez_m[ is.finite(entrez_m$genes), ]
+```
+
+
+```{r}
+pick_top_terms <- function(data){
+  temp_pick <- data %>% arrange(desc(fin_gene_ratio)) %>% mutate(rank_enrich = row_number())
+  if(sum(data$p.adjust< 0.05) > 0){
+    for(rank in temp_pick$rank_enrich){
+      padj <- (temp_pick %>% filter(rank_enrich == rank))$p.adjust
+      me_val <- (temp_pick %>% filter(rank_enrich == rank))$module_colour
+      if(padj < 0.05){
+        top_term <- temp_pick %>% filter(rank_enrich == rank) %>% mutate(sig = paste("padj = ", format(padj, scientific = T, digits = 3), sep ="")); break
+      }
+    } 
+  } else {
+    pval <- (temp_pick %>% filter(rank_enrich == 1))$pvalue
+    me_val <- (temp_pick %>% filter(rank_enrich == 1))$module_colours
+    top_term <- temp_pick %>% filter(rank_enrich == 1) %>% mutate(sig = paste("pval = ", format(pval,scientific = T,digits = 3), sep =""))
+  }
+  return(top_term)
+}
+```
+
+
+```{r}
+me_col <- net_fem$colors %>% as.data.frame() %>% setNames("colour_codes") %>% mutate(MEs = paste("ME", colour_codes,sep="")) %>% mutate(module_colour = labels2colors(colour_codes)) %>% unique()
+go_enrichment <- c()
+temp_res <- c()
+
+gene_mods <- entrez_f %>% mutate(genes = as.character(genes)) %>% setNames(c("gene_id", "module_colours", "MEs"))
+
+for(i in unique(gene_mods$module_colours)){
+  if(i != "grey"){
+    tempData <- gene_mods %>% filter(module_colours == i)
+    temp_entrez <- tempData$gene_id
+    temp_enrich <- enrichGO(gene = temp_entrez, OrgDb = 'org.Hs.eg.db', keyType = "ENTREZID", pvalueCutoff = 0.05, pAdjustMethod = "BH", qvalueCutoff = 0.05, universe = gene_mods$gene_id, ont = "BP")
+    temp_res <- as.data.frame(temp_enrich@result) %>% mutate(module_colour = i)
+  }
+  go_enrichment <- rbind(go_enrichment, temp_res)
+}
+
+
+go_enrichment_f<- go_enrichment
+sum(go_enrichment_f$p.adjust < 0.05)
+sum(go_enrichment_f$pvalue < 0.05) 
+
+top_terms <- c()
+table_display_f = go_enrichment_f %>% filter(pvalue < 0.05) %>% merge(., me_col, by = "module_colour", all.x = T) %>% separate(GeneRatio, into = c("m", "n"), sep = "/", remove = F) %>% mutate(m = as.numeric(m), n = as.numeric(n), fin_gene_ratio = signif(m/n, 3))
+
+for(i in unique(table_display_f$module_colour)){
+  print(i)
+  temp <- table_display_f %>% filter(module_colour == i)
+  top_term_chosen <- pick_top_terms(temp)
+  top_terms <- rbind(top_terms, top_term_chosen)
+}
+
+pdf("go_enrichment_fem.pdf", width = 10, height = 7)
+top_terms %>% ggplot(aes(y = reorder(Description, fin_gene_ratio), x = fin_gene_ratio, fill = module_colour)) + geom_bar(stat = "identity") + theme_classic() + theme(legend.position = "none", axis.text.y = element_text(size = 10)) + labs(y = "", title = "GO enrichment for Females (CNT+MDD)") + scale_fill_manual(values = top_terms$module_colour) + geom_text(aes(label = sig), hjust = -0.1) + xlim(0,0.3)
+dev.off()
+
+top_terms_female <- top_terms
+```
+
+```{r}
+me_col <- net_male$colors %>% as.data.frame() %>% setNames("colour_codes") %>% mutate(MEs = paste("ME", colour_codes,sep="")) %>% mutate(module_colour = labels2colors(colour_codes)) %>% unique()
+go_enrichment <- c()
+temp_res <- c()
+ 
+gene_mods <- entrez_m %>% mutate(genes = as.character(genes)) %>% setNames(c("gene_id", "module_colours", "MEs"))
+
+for(i in unique(gene_mods$module_colours)){
+  if(i != "grey"){
+    tempData <- gene_mods %>% filter(module_colours == i)
+    temp_entrez <- tempData$gene_id
+    temp_enrich <- enrichGO(gene = temp_entrez, OrgDb = 'org.Hs.eg.db', keyType = "ENTREZID", pvalueCutoff = 0.05, pAdjustMethod = "BH", qvalueCutoff = 0.05, universe = gene_mods$gene_id, ont = "BP")
+    temp_res <- as.data.frame(temp_enrich@result) %>% mutate(module_colour = i)
+  }
+  go_enrichment <- rbind(go_enrichment, temp_res)
+}
+
+
+go_enrichment_m<- go_enrichment
+sum(go_enrichment_m$p.adjust < 0.05)
+sum(go_enrichment_m$pvalue < 0.05)
+
+top_terms <- c()
+table_display_m = go_enrichment_m %>% filter(pvalue < 0.05)  %>% merge(., me_col, by = "module_colour", all.x = T) %>% separate(GeneRatio, into = c("m", "n"), sep = "/", remove = F) %>% mutate(m = as.numeric(m), n = as.numeric(n), fin_gene_ratio = signif(m/n, 3))
+
+for(i in unique(table_display_m$module_colour)){
+  print(i)
+  temp <- table_display_m %>% filter(module_colour == i)
+  top_term_chosen <- pick_top_terms(temp)
+  top_terms <- rbind(top_terms, top_term_chosen)
+}
+
+pdf("go_enrichment_male.pdf", width = 10, height = 7)
+top_terms <- top_terms %>%
+  mutate(module_colours = case_when(module_colour == "purple" ~ "magenta",
+                                module_colour == "magenta" ~ "yellow",
+                                module_colour == "blue" ~ "pink",
+                                module_colour == "turquoise" ~ "brown", 
+                                module_colour == "green" ~ "purple",
+                                module_colour == "pink" ~ "blue",
+                                module_colour == "brown" ~ "red",
+                                module_colour == "yellow" ~ "green",
+                                module_colour == "red" ~ "turquoise", 
+                                TRUE ~ module_colour))
+
+top_terms %>% ggplot(aes(y = reorder(Description, fin_gene_ratio), x = fin_gene_ratio)) + geom_bar(stat = "identity", fill = top_terms$module_colours)+ theme_classic() + theme(legend.position = "none", axis.text.y = element_text(size = 10)) + labs(y = "", title = "GO enrichment for Males (CNT+MDD)") + geom_text(aes(label = sig), hjust = -0.1) + xlim(0,0.3)
+dev.off()
+
+top_terms_male <- top_terms
+```
+
+------------------------
+Module-Trait association
+------------------------
+
+```{r}
+signif_func <- function(x){
+  case_when(x < 1e-04 ~ "****",
+            x <0.001 & x >= 1e-04 ~ "***",
+            x <0.01 & x >= 0.001 ~"**",
+            x<0.05 & x >= 0.01 ~"*",
+            x >= 0.05 ~ "")
+}
+```
+
+```{r}
+get_cor_plot <- function(setno, multiExpr, metd, net, outname){
+
+  setSamples = multiExpr[[setno]]$data %>% as.data.frame() %>% rownames_to_column("sample_id_match") %>% dplyr::select(sample_id_match)
+  traitRows = setSamples %>% merge(., metd, by = "sample_id_match") %>% dplyr::select(sample_id_match)
+    Traits = metd %>% merge(., traitRows, by = "sample_id_match") %>% column_to_rownames("sample_id_match")
+    Traits <- Traits %>% mutate_all(., function(x) as.numeric(as.character(x)))
+
+  nSamples = nrow(traitRows)
+  MEs = net$multiMEs[[setno]]$data %>% as.data.frame() %>%
+    rownames_to_column("sample_id_match") %>%
+    merge(., traitRows, by = "sample_id_match") %>% column_to_rownames("sample_id_match") %>% as.matrix()
+  me_col <- net$colors %>% as.data.frame() %>% setNames("colour_codes") %>% mutate(MEnames = paste("ME", colour_codes,sep="")) %>% unique()
+  me_col <- me_col[order(match(me_col$MEnames, colnames(MEs))), ]
+  MEColourNames = as.vector(me_col$MEnames)
+  
+  moduleTraitCor = cor(MEs, Traits, method = "spearman", use = "p")
+  moduleTraitPvalue = corPvalueStudent(moduleTraitCor, nSamples)
+  
+signif_labels <- moduleTraitPvalue %>% as.data.frame() %>% mutate(across(.cols = everything(), signif_func, .names = "signif_{col}"))
+signif_labels <- signif_labels %>% 
+  dplyr::select(matches("signif")) %>%
+  setNames(colnames(moduleTraitPvalue)) %>% as.matrix()
+
+  textMatrix = paste(signif(moduleTraitCor, 2), "\n", signif_labels, sep = "")
+  dim(textMatrix) = dim(moduleTraitCor)
+  colnames(textMatrix) <- colnames(moduleTraitCor)
+  rownames(textMatrix) <- rownames(moduleTraitCor)
+  data1 <- as.data.frame(moduleTraitCor) %>% mutate(module_name = rownames(.)) %>% melt(., id.vars = "module_name") %>% mutate(to_match = paste(module_name, variable, sep = "-")) %>% setNames(c("module_name", "variable", "cor", "to_match"))
+  data2 <- as.data.frame(textMatrix) %>% mutate(module_name = rownames(.)) %>% melt(., id.vars = "module_name") %>% mutate(to_match = paste(module_name, variable, sep = "-")) %>% dplyr::select(-module_name, -variable) %>% setNames(c("text", "to_match"))
+  plot_data <- merge(data1, data2, by = "to_match", all.x = T)
+  return(plot_data)
+}
+```
+
+#Add additioanl trait info for dataset by loading relevant excel files and concatenating into metd_x - where x is dataset identified, e.g B for biodep
+
+BMI dataset together - male and female
+
+```{r}
+pdf("module_bmi_fem_combined_datasets.pdf", width = 10, height = 7)
+#Female
+
+metd_trait <- metd_b %>% filter(Sex == "Female") %>% filter(Disorder == "MDD") %>% dplyr::select(sample_id_match, bmi_calculated)
+cmf_b <- get_cor_plot(setno = 1, multiExpr = multiExpr_fem, metd = metd_trait, net = net_fem, outname = " :bf")
+cmf_b <- cmf_b %>% mutate(dataset = "BIODEP")
+
+library(lubridate)
+metd_trait<- metd_d %>% filter(sex == "Female") %>% filter(Disorder == "MDD") %>% separate(Time, into = c(NA, "Hours", NA, "Minutes", NA), sep = "\\[|\\]|:", remove = F) %>% mutate(Time_of_blood_draw = paste(Hours, "H", Minutes, " min", sep ="")) %>% mutate(num_time = minute(minutes(period(Time_of_blood_draw)))) %>% dplyr::select(sample_id_match, BMI)
+cmf_d <- get_cor_plot(setno = 2, multiExpr = multiExpr_fem, metd = metd_trait, net = net_fem, outname = " :df")
+cmf_d <- cmf_d %>% mutate(dataset = "dbGaP")
+
+metd_trait <- merge(metd_m, metad_merged, by.x = "sample_id_match", by.y = "cell_id") %>% filter(Sex == "F") %>% filter(Disorder == "MDD") %>% dplyr::select(sample_id_match, BMI)
+cmf_m <- get_cor_plot(setno = 5, multiExpr = multiExpr_fem, metd = metd_trait, net = net_fem, outname = " :mf")
+cmf_m <- cmf_m %>% mutate(dataset = "Mostafavi")
+
+plot_data <- rbind(cmf_b, cmf_d, cmf_m)
+plot_data %>% ggplot(aes(x = dataset, y = module_name, fill = cor)) + geom_tile() + coord_equal(ratio = 1) + scale_fill_distiller(palette = "RdBu", limits = c(-1,1), direction = -1) + labs(x= "", y = "", title = paste("Module-BMI correlation:", "Female")) + theme_minimal(base_size = 12) + theme(axis.text.x = element_text(angle = 30, vjust = 0.65)) + geom_text(aes(label = text))
+  
+dev.off()
+
+pdf("module_bmi_male_combined_datasets.pdf", width = 13, height = 8)
+#Male
+metd_trait <- merge(metd_b, feature_details, by = "sample_id_match") %>% filter(Sex == "Male") %>% filter(Disorder == "MDD") %>% dplyr::select(sample_id_match, bmi_calculated)
+cmm_b <-get_cor_plot(setno = 1, multiExpr = multiExpr_male, metd = metd_trait, net = net_male, outname = " :bm")
+cmm_b <- cmm_b %>% mutate(dataset = "BIODEP")
+
+library(lubridate)
+metd_trait<- metd_d %>% filter(sex == "Male") %>% filter(Disorder == "MDD") %>% separate(Time, into = c(NA, "Hours", NA, "Minutes", NA), sep = "\\[|\\]|:", remove = F) %>% mutate(Time_of_blood_draw = paste(Hours, "H", Minutes, " min", sep ="")) %>% mutate(num_time = minute(minutes(period(Time_of_blood_draw)))) %>% dplyr::select(sample_id_match, BMI)
+cmm_d <- get_cor_plot(setno = 2, multiExpr = multiExpr_male, metd = metd_trait, net = net_male, outname = " :dm")
+cmm_d <- cmm_d %>% mutate(dataset = "dbGaP")
+
+metd_trait <- merge(metd_m, metad_merged, by.x = "sample_id_match", by.y = "cell_id") %>% filter(Sex == "M") %>% filter(Disorder == "MDD") %>% dplyr::select(sample_id_match, BMI)
+cmm_m <- get_cor_plot(setno = 5, multiExpr = multiExpr_male, metd = metd_trait, net = net_male, outname = " :mm")
+cmm_m <- cmm_m %>% mutate(dataset = "Mostafavi")
+
+plot_data <- rbind(cmm_b, cmm_d, cmm_m)
+plot_data %>% ggplot(aes(x = dataset, y = module_name, fill = cor)) + geom_tile() + coord_equal(ratio = 1) + scale_fill_distiller(palette = "RdBu", limits = c(-1,1), direction = -1) + labs(x= "", y = "", title = paste("Module-BMI correlation:", "Male")) + theme_minimal(base_size = 12) + theme(axis.text.x = element_text(angle = 30, vjust = 0.65)) + geom_text(aes(label = text))
+  
+dev.off()
+
+```
+
+
+---------------------
+Module features
+---------------------
+
+```{r}
+mergedColors_f <- labels2colors(net_fem$colors)
+mergedColors_m <- labels2colors(net_male$colors)
+
+eigengenes_all_fem_all <- multiSetMEs(exprData = multiExpr_fem, universalColors = mergedColors_f, nPC = 1, excludeGrey = F, returnValidOnly = T, softPower = 12)
+eigengenes_all_male_all <- multiSetMEs(exprData = multiExpr_male, universalColors = mergedColors_m, nPC = 1, excludeGrey = F, returnValidOnly = T, softPower = 10)
+
+```
+
+```{r}
+pdf("module_dendro_heatmap_all.pdf", width = 13, height = 9)
+for(i in seq(1,5,1)){
+  for(j in seq(1,5,1)){
+    check1 <- eigengenes_all_fem_all[i]
+    check2 <- eigengenes_all_fem_all[j]
+    check <- c(check1, check2)
+    name1 = names(eigengenes_all_fem_all[i])
+    name2 = names(eigengenes_all_fem_all[j])
+    plotEigengeneNetworks(multiME = check, setLabels = c(name1, name2), excludeGrey = T, greyLabel = "grey", signed = T, plotHeatmaps = T, printPreservation = T, plotAdjacency = F, plotDendrograms = F, colorLabels = T)
+  }
+}
+for(i in seq(1,5,1)){
+  for(j in seq(1,5,1)){
+    check1 <- eigengenes_all_male_all[i]
+    check2 <- eigengenes_all_male_all[j]
+    check <- c(check1, check2)
+    name1 = names(eigengenes_all_male_all[i])
+    name2 = names(eigengenes_all_male_all[j])
+    plotEigengeneNetworks(multiME = check, setLabels = c(name1, name2), excludeGrey = T, greyLabel = "grey", signed = T, plotHeatmaps = T, printPreservation = T, plotAdjacency = F, plotDendrograms = F, colorLabels = T)
+  }
+}
+dev.off()
+
+pdf("module_dendro_male_fem_all_data.pdf", width = 16, height = 8)
+plotEigengeneNetworks(multiME =  eigengenes_all_fem_all, setLabels = c("b","d","g","l","m"), excludeGrey = T, greyLabel = "grey", signed = T, plotHeatmaps = F, printPreservation = F, plotAdjacency = F, plotDendrograms = T, colorLabels = T)
+plotEigengeneNetworks(multiME =  eigengenes_all_male_all, setLabels = c("b","d","g","l","m"), excludeGrey = T, greyLabel = "grey", signed = T, plotHeatmaps = F, printPreservation = F, plotAdjacency = F, plotDendrograms = T, colorLabels = T)
+dev.off()
+
+```
+
+Identify hub genes for interesting modules
+
+```{r}
+load("../ensembl_GRCh38_v84.Rdata", verbose = T)
+att <- c("ensembl_gene_id", "external_gene_name", "description")
+library(biomaRt)
+gene_info_descp <- getBM(mart = ensembl, attributes = att)
+
+rm(att, ensembl)
+```
+
+
+```{r}
+kmes_fem <- consensusKME(multiExpr = multiExpr_fem, moduleLabels =net_fem$colors, multiEigengenes = net_fem$multiMEs, signed = T, corAndPvalueFnc =  bicorAndPvalue, corOptions = list(maxPOutliers = 0.05), getQvalues = T, excludeGrey = T, greyLabel = "0", setNames = c("b","d","g","l","m"))
+```
+
+
+```{r}
+kmes_fem_m9 <- kmes_fem %>% as.data.frame() %>% dplyr::select(ID, weightedAverage.DoFWeights.kME9, 	
+consensus.kME9, meta.q.DoFWeights.kME9) %>% setNames(c("ID", "wth_kme", "cons_kme", "meta_q")) %>% filter(meta_q < 0.05) %>% arrange(-cons_kme, -wth_kme) %>% slice_head(n = 1) %>% merge(., gene_info_descp, by.x = "ID", by.y = "external_gene_name")
+
+kmes_fem_m2 <- kmes_fem %>% as.data.frame() %>% dplyr::select(ID, weightedAverage.DoFWeights.kME2, 	
+consensus.kME2, meta.q.DoFWeights.kME2) %>% setNames(c("ID", "wth_kme", "cons_kme", "meta_q")) %>% filter(meta_q < 0.05) %>% arrange(-cons_kme, -wth_kme) %>% slice_head(n = 1) %>% merge(., gene_info_descp, by.x = "ID", by.y = "external_gene_name")
+
+kmes_fem_m5 <- kmes_fem %>% as.data.frame() %>% dplyr::select(ID, weightedAverage.DoFWeights.kME5, 	
+consensus.kME5, meta.q.DoFWeights.kME5) %>% setNames(c("ID", "wth_kme", "cons_kme", "meta_q")) %>% filter(meta_q < 0.05) %>% arrange(-cons_kme, -wth_kme) %>% slice_head(n = 1) %>% merge(., gene_info_descp, by.x = "ID", by.y = "external_gene_name")
+
+kmes_fem_m6 <- kmes_fem %>% as.data.frame() %>% dplyr::select(ID, weightedAverage.DoFWeights.kME6, 	
+consensus.kME6, meta.q.DoFWeights.kME6) %>% setNames(c("ID", "wth_kme", "cons_kme", "meta_q")) %>% filter(meta_q < 0.05) %>% arrange(-cons_kme, -wth_kme) %>% slice_head(n = 1) %>% merge(., gene_info_descp, by.x = "ID", by.y = "external_gene_name")
+
+kmes_fem_m3 <- kmes_fem %>% as.data.frame() %>% dplyr::select(ID, weightedAverage.DoFWeights.kME3, 	
+consensus.kME3, meta.q.DoFWeights.kME3) %>% setNames(c("ID", "wth_kme", "cons_kme", "meta_q")) %>% filter(meta_q < 0.05) %>% arrange(-cons_kme, -wth_kme) %>% slice_head(n =1) %>% merge(., gene_info_descp, by.x = "ID", by.y = "external_gene_name")
+
+kmes_fem_m7 <- kmes_fem %>% as.data.frame() %>% dplyr::select(ID, weightedAverage.DoFWeights.kME7, 	
+consensus.kME7, meta.q.DoFWeights.kME7) %>% setNames(c("ID", "wth_kme", "cons_kme", "meta_q")) %>% filter(meta_q < 0.05) %>% arrange(-cons_kme, -wth_kme) %>% slice_head(n = 1) %>% merge(., gene_info_descp, by.x = "ID", by.y = "external_gene_name")
+
+kmes_fem_m4 <- kmes_fem %>% as.data.frame() %>% dplyr::select(ID, weightedAverage.DoFWeights.kME4, 	
+consensus.kME4, meta.q.DoFWeights.kME4) %>% setNames(c("ID", "wth_kme", "cons_kme", "meta_q")) %>% filter(meta_q < 0.05) %>% arrange(-cons_kme, -wth_kme) %>% slice_head(n = 1) %>% merge(., gene_info_descp, by.x = "ID", by.y = "external_gene_name")
+
+kmes_fem_m8 <- kmes_fem %>% as.data.frame() %>% dplyr::select(ID, weightedAverage.DoFWeights.kME8, 	
+consensus.kME8, meta.q.DoFWeights.kME8) %>% setNames(c("ID", "wth_kme", "cons_kme", "meta_q")) %>% filter(meta_q < 0.05) %>% arrange(-cons_kme, -wth_kme) %>% slice_head(n =1) %>% merge(., gene_info_descp, by.x = "ID", by.y = "external_gene_name")
+
+
+top_kmes_genes_fem <- rbind(kmes_fem_m9, kmes_fem_m2, kmes_fem_m5, kmes_fem_m6, kmes_fem_m3, kmes_fem_m4, kmes_fem_m7, kmes_fem_m8) %>% mutate(module = rep(c("ME9", "ME2", "ME5", "ME6", "ME3", "ME7", "ME4", "ME8"), times = 1))
+
+rm(list = ls(pattern = "kmes_fem_"))
+
+
+kmes_male <- consensusKME(multiExpr = multiExpr_male, moduleLabels =net_male$colors, multiEigengenes = net_male$multiMEs, signed = T, corAndPvalueFnc =  bicorAndPvalue, corOptions = list(maxPOutliers = 0.05), getQvalues = T, excludeGrey = T, greyLabel = "0", setNames = c("b","d","g","l","m"))
+
+kmes_male_m9 <- kmes_male %>% as.data.frame() %>% dplyr::select(ID, weightedAverage.DoFWeights.kME9, 	
+consensus.kME9, meta.q.DoFWeights.kME9) %>% setNames(c("ID", "wth_kme", "cons_kme", "meta_q")) %>% filter(meta_q < 0.05) %>% arrange(-cons_kme, -wth_kme) %>% slice_head(n = 1) %>% merge(., gene_info_descp, by.x = "ID", by.y = "external_gene_name") %>% distinct(ID, .keep_all = T) 
+
+kmes_male_m2 <- kmes_male %>% as.data.frame() %>% dplyr::select(ID, weightedAverage.DoFWeights.kME2, 	
+consensus.kME2, meta.q.DoFWeights.kME2) %>% setNames(c("ID", "wth_kme", "cons_kme", "meta_q")) %>% filter(meta_q < 0.05) %>% arrange(-cons_kme, -wth_kme) %>% slice_head(n = 1) %>% merge(., gene_info_descp, by.x = "ID", by.y = "external_gene_name") %>% distinct(ID, .keep_all = T) 
+
+kmes_male_m5 <- kmes_male %>% as.data.frame() %>% dplyr::select(ID, weightedAverage.DoFWeights.kME5, 	
+consensus.kME5, meta.q.DoFWeights.kME5) %>% setNames(c("ID", "wth_kme", "cons_kme", "meta_q")) %>% filter(meta_q < 0.05) %>% arrange(-cons_kme, -wth_kme) %>% slice_head(n = 1) %>% merge(., gene_info_descp, by.x = "ID", by.y = "external_gene_name") %>% distinct(ID, .keep_all = T) 
+
+kmes_male_m6 <- kmes_male %>% as.data.frame() %>% dplyr::select(ID, weightedAverage.DoFWeights.kME6, 	
+consensus.kME6, meta.q.DoFWeights.kME6) %>% setNames(c("ID", "wth_kme", "cons_kme", "meta_q")) %>% filter(meta_q < 0.05) %>% arrange(-cons_kme, -wth_kme) %>% slice_head(n = 1) %>% merge(., gene_info_descp, by.x = "ID", by.y = "external_gene_name")
+
+kmes_male_m3 <- kmes_male %>% as.data.frame() %>% dplyr::select(ID, weightedAverage.DoFWeights.kME3, 	
+consensus.kME3, meta.q.DoFWeights.kME3) %>% setNames(c("ID", "wth_kme", "cons_kme", "meta_q")) %>% filter(meta_q < 0.05) %>% arrange(-cons_kme, -wth_kme) %>% slice_head(n = 1) %>% merge(., gene_info_descp, by.x = "ID", by.y = "external_gene_name")
+
+kmes_male_m7 <- kmes_male %>% as.data.frame() %>% dplyr::select(ID, weightedAverage.DoFWeights.kME7, 	
+consensus.kME7, meta.q.DoFWeights.kME7) %>% setNames(c("ID", "wth_kme", "cons_kme", "meta_q")) %>% filter(meta_q < 0.05) %>% arrange(-cons_kme, -wth_kme) %>% slice_head(n = 1) %>% merge(., gene_info_descp, by.x = "ID", by.y = "external_gene_name")
+
+kmes_male_m10 <- kmes_male %>% as.data.frame() %>% dplyr::select(ID, weightedAverage.DoFWeights.kME10, 	
+consensus.kME10, meta.q.DoFWeights.kME10) %>% setNames(c("ID", "wth_kme", "cons_kme", "meta_q")) %>% filter(meta_q < 0.05) %>% arrange(-cons_kme, -wth_kme) %>% slice_head(n = 1) %>% merge(., gene_info_descp, by.x = "ID", by.y = "external_gene_name")
+
+kmes_male_m4 <- kmes_male %>% as.data.frame() %>% dplyr::select(ID, weightedAverage.DoFWeights.kME4, 	
+consensus.kME4, meta.q.DoFWeights.kME4) %>% setNames(c("ID", "wth_kme", "cons_kme", "meta_q")) %>% filter(meta_q < 0.05) %>% arrange(-cons_kme, -wth_kme) %>% slice_head(n = 1) %>% merge(., gene_info_descp, by.x = "ID", by.y = "external_gene_name")
+
+kmes_male_m8 <- kmes_male %>% as.data.frame() %>% dplyr::select(ID, weightedAverage.DoFWeights.kME8, 	
+consensus.kME8, meta.q.DoFWeights.kME8) %>% setNames(c("ID", "wth_kme", "cons_kme", "meta_q")) %>% filter(meta_q < 0.05) %>% arrange(-cons_kme, -wth_kme) %>% slice_head(n = 1) %>% merge(., gene_info_descp, by.x = "ID", by.y = "external_gene_name")
+
+kmes_male_m1 <- kmes_male %>% as.data.frame() %>% dplyr::select(ID, weightedAverage.DoFWeights.kME1, 	
+consensus.kME1, meta.q.DoFWeights.kME1) %>% setNames(c("ID", "wth_kme", "cons_kme", "meta_q")) %>% filter(meta_q < 0.05) %>% arrange(-cons_kme, -wth_kme) %>% slice_head(n = 1) %>% merge(., gene_info_descp, by.x = "ID", by.y = "external_gene_name")
+
+
+top_kmes_genes_male <- rbind(kmes_male_m9, kmes_male_m2, kmes_male_m5, kmes_male_m6, kmes_male_m3, kmes_male_m7, kmes_male_m10, kmes_male_m4, kmes_male_m8, kmes_male_m1) %>% mutate(module = rep(c("ME9", "ME2", "ME5", "ME6", "ME3","ME7", "ME10", "ME4", "ME8", "ME1"), times = 1))
+
+rm(list = ls(pattern = "kmes_male_"))
+```
+
+
+Which modules do meta-analytic DGE belong to?
+
+```{r}
+gene_module_key_f <- tibble::enframe(net_fem$colors, name = "gene", value = "module") %>% dplyr::mutate(module = paste0("ME", module))
+
+gene_module_key_cnt_f <- tibble::enframe(net_cnt_fem$colors, name = "gene", value = "module") %>% dplyr::mutate(module = paste0("ME", module))
+
+gene_module_key_m <- tibble::enframe(net_male$colors, name = "gene", value = "module") %>% dplyr::mutate(module = paste0("ME", module))
+```
+
+
+```{r}
+DGE_meta_female_mods <- bacon_meta_dge_female %>% filter(pvalue.BacWeightedZ_adj_pval < 0.05) %>% rownames_to_column("gene") %>% merge(., gene_module_key_f, by = "gene", all.x = T) %>% merge(., top_terms_fem, by.x = "module", by.y= "MEs", all.x = T) %>% mutate(top_pathway = if_else(is.na(Description) == F, Description, "Unassigned"), module_colours = if_else(is.na(module_colour)== F, module_colour, "grey")) %>% dplyr::select(gene, module, module_colours, top_pathway) %>% group_by(module, module_colours, top_pathway) %>% summarise(no_of_dges = n()) %>% arrange(no_of_dges)
+
+DGE_meta_female_mods_cnt <- bacon_meta_dge_female %>% filter(pvalue.BacWeightedZ_adj_pval < 0.05) %>% rownames_to_column("gene") %>% merge(., gene_module_key_cnt_f, by = "gene", all.x = T) %>% merge(., top_terms_cnt_fem, by.x = "module", by.y= "MEs", all.x = T) %>% mutate(top_pathway = if_else(is.na(Description) == F, Description, "Unassigned"), module_colours = if_else(is.na(module_colour)== F, module_colour, "grey")) %>% dplyr::select(gene, module, module_colours, top_pathway) %>% group_by(module, module_colours, top_pathway) %>% summarise(no_of_dges = n()) %>% arrange(no_of_dges)
+```
+
+```{r}
+pdf("dge_meta_modules_bacon.pdf", width = 8, height = 6)
+DGE_meta_female_mods %>% ggplot(aes(y = reorder(top_pathway, no_of_dges), x = no_of_dges)) + geom_bar(stat = "identity", fill = DGE_meta_female_mods$module_colours) + theme_classic() + theme(legend.position = "none", axis.text.y = element_text(size = 10)) + labs(y = "", title = "DGE Females (CNT+MDD)") + geom_text(aes(label = no_of_dges), hjust = -0.2) + xlim(0, 20)
+
+DGE_meta_female_mods_cnt %>% ggplot(aes(y = reorder(top_pathway, no_of_dges), x = no_of_dges)) + geom_bar(stat = "identity", fill = DGE_meta_female_mods_cnt$module_colours) + theme_classic() + theme(legend.position = "none", axis.text.y = element_text(size = 10)) + labs(y = "", title = "DGE Females (CNT)") + geom_text(aes(label = no_of_dges), hjust = -0.2) + xlim(0, 20)
+dev.off()
+```
+
+---------------------------
+Module-Disorder association
+---------------------------
+
+Female
+
+```{r}
+multiExpr <- multiExpr_fem
+net <- net_fem
+Traits <- Traits_fem
+
+module_eigengenes <- list()
+stats_df <- list()
+
+#get MES
+for(set in 1:length(multiExpr)){
+  module_eigengenes[[set]] <- net$multiMEs[[set]]$data
+  print(head(module_eigengenes[[set]]))
+}
+module_eigengenes_fem <- module_eigengenes
+
+#check rownames identical
+for(i in 1:length(multiExpr)){
+print(identical(rownames(Traits[[i]]$data), rownames(module_eigengenes[[i]])))
+}
+
+#stats
+
+for(set in 1:length(multiExpr)){
+  des_mat <- data.frame(group = Traits[[set]]$data$Disorder, module_eigengenes[[set]]) %>% rownames_to_column("sample_id_match") %>% dplyr::select(-ME0)
+  des_mat <- melt(des_mat, id.vars = c("sample_id_match", "group"))
+  tvals <- c()
+  pvals <- c()
+  modules <- c()
+  cohens_d <- c()
+  cohens_d_sd <- c()
+  for(i in unique(des_mat$variable)){
+  des_mat_sub <- des_mat %>% filter(variable == i)
+  des_mat_sub$group <- factor(des_mat_sub$group, levels = c("CNT", "MDD"))
+  tvals <- c(tvals, t.test(des_mat_sub$value ~ des_mat_sub$group)$statistic[[1]])
+  pvals <- c(pvals, t.test(des_mat_sub$value ~ des_mat_sub$group)$p.value[[1]])
+  modules <- c(modules, i)
+  cohens_d <- c(cohens_d, cohen.d(des_mat_sub$value ~ des_mat_sub$group)$estimate)
+  cohens_d_sd <- c(cohens_d_sd, cohen.d(des_mat_sub$value ~ des_mat_sub$group)$sd)
+  }
+  stat_df <- cbind(modules, tvals, pvals, cohens_d, cohens_d_sd) %>% as.data.frame()
+  stat_df$p.adj <- p.adjust(stat_df$pvals, method = "BH")
+  stats_df[[set]] <- stat_df
+}
+
+stats_df_fem <- stats_df
+
+for(i in 1:length(multiExpr)){
+print(sum(stats_df[[i]]$p.adj < 0.05))
+}
+```
+
+Male
+
+```{r}
+multiExpr <- multiExpr_male
+net <- net_male
+Traits <- Traits_male
+
+module_eigengenes <- list()
+stats_df <- list()
+
+#get MES
+for(set in 1:length(multiExpr)){
+  module_eigengenes[[set]] <- net$multiMEs[[set]]$data
+  print(head(module_eigengenes[[set]]))
+}
+module_eigengenes_male <- module_eigengenes
+
+#check rownames identical
+for(i in 1:length(multiExpr)){
+print(identical(rownames(Traits[[i]]$data), rownames(module_eigengenes[[i]])))
+}
+
+#stats
+for(set in 1:length(multiExpr)){
+  des_mat <- data.frame(group = Traits[[set]]$data$Disorder, module_eigengenes[[set]]) %>% rownames_to_column("sample_id_match") %>% dplyr::select(-ME0)
+  des_mat <- melt(des_mat, id.vars = c("sample_id_match", "group"))
+  tvals <- c()
+  pvals <- c()
+  modules <- c()
+  cohens_d <- c()
+  for(i in unique(des_mat$variable)){
+    
+  des_mat_sub <- des_mat %>% filter(variable == i)
+  tvals <- c(tvals, t.test(des_mat_sub$value ~ des_mat_sub$group)$statistic[[1]])
+  pvals <- c(pvals, t.test(des_mat_sub$value ~ des_mat_sub$group)$p.value[[1]])
+  modules <- c(modules, i)
+  cohens_d <- c(cohens_d, cohen.d(des_mat_sub$value ~ des_mat_sub$group)$estimate)
+  }
+  stat_df <- cbind(modules, tvals, pvals, cohens_d) %>% as.data.frame()
+  stat_df$p.adj <- p.adjust(stat_df$pvals, method = "BH")
+  stats_df[[set]] <- stat_df
+}
+
+stats_df_male <- stats_df
+
+for(i in 1:length(multiExpr)){
+print(sum(stats_df[[i]]$p.adj < 0.05))
+}
+```
+
+write Cohens'd results
+
+```{r}
+dataset_names <- c("BIODEP", "dbGaP", "HiTDiP", "Le", "Mostafavi")
+indiv_data <- c()
+for(i in seq(1,5,1)){
+  data <- stats_df_male[[i]] %>% as.data.frame() %>% mutate(dataset = dataset_names[i])
+  indiv_data <- rbind(indiv_data, data)
+}
+write.table(indiv_data, file = "Cohens_D_individual_dataset_male_consensus_modules_ttest.txt", quote = F, row.names = F, sep = "\t")
+
+
+indiv_data <- c()
+for(i in seq(1,5,1)){
+  data <- stats_df_fem[[i]] %>% as.data.frame() %>% mutate(dataset = dataset_names[i])
+  indiv_data <- rbind(indiv_data, data)
+}
+write.table(indiv_data, file = "Cohens_D_individual_dataset_female_consensus_modules_ttest.txt", quote = F, row.names = F, sep = "\t")
+
+```
+
+
+Correlation plots
+
+```{r}
+biodep = stats_df_fem[[1]] %>% as.data.frame() %>% mutate(dataset = "BIODEP")
+dbgap = stats_df_fem[[2]]%>% as.data.frame() %>% mutate(dataset = "dbGaP")
+hitdip = stats_df_fem[[3]]%>% as.data.frame() %>% mutate(dataset = "HiTDiP")
+le = stats_df_fem[[4]]%>% as.data.frame() %>% mutate(dataset = "Le")
+mostafavi = stats_df_fem[[5]]%>% as.data.frame() %>% mutate(dataset = "Mostafavi")
+
+corr_data <- rbind(biodep, dbgap, hitdip, le, mostafavi) %>% mutate(signed_pval = -log10(as.numeric(pvals))*sign(as.numeric(tvals)))
+
+corr_data <- corr_data %>% dplyr::select(modules, dataset, signed_pval) %>% dcast(modules ~ dataset, value.var = "signed_pval") %>% column_to_rownames("modules") %>% as.matrix()
+
+corr_plot_data2 <- rcorr(corr_data, type = "pearson")
+corr_plot_data2$P[is.na(corr_plot_data2$P) == T] <- 0
+corr_plot_data2$r[corr_plot_data2$r == 1] <- 0
+diag(corr_plot_data2$P) <- 1
+
+
+signif_func <- function(x){
+  case_when(x < 1e-04 ~ "****",
+            x <0.001 & x >= 1e-04 ~ "***",
+            x <0.01 & x >= 0.001 ~"**",
+            x<0.05 & x >= 0.01 ~"*",
+            x >= 0.05 ~ " ")
+}
+
+
+signif_labels <- corr_plot_data2$P %>% as.data.frame() %>% mutate(across(.cols = everything(), signif_func, .names = "signif_{col}"))
+signif_labels <- signif_labels %>%
+  dplyr::select(signif_BIODEP, signif_dbGaP, signif_Le, signif_Mostafavi, signif_HiTDiP) %>%
+  setNames(c("BIODEP", "dbGaP", "Le", "Mostafavi", "HiTDiP")) %>% as.matrix()
+textMatrix = paste(signif(corr_plot_data2$r, 2), "\n", signif_labels, sep = "")
+dim(textMatrix) = dim(corr_plot_data2$r)
+textMatrix[textMatrix == "0\n "] <- ""
+
+pdf("Correlation_dendrogram_heatmap_five_datasets_cc_wgcna_female.pdf", width = 8, height = 5)
+
+heatmap.2(corr_plot_data2$r, dendrogram = "column", trace = "none", hline = NULL, vline = NULL, cellnote = textMatrix, notecol = "grey20", col = "bluered", margins = c(8,8), revC = T, asp = 1, lwid = c(0.55,0.55), keysize = 1.5, key.title = "Pearson's correlation", density.info = "none", breaks = seq(-1,1,0.025), symkey = F, cexRow = 1, cexCol = 1, key.xlab = "")
+dev.off()
+
+```
+
+```{r}
+biodep = stats_df_male[[1]] %>% as.data.frame() %>% mutate(dataset = "BIODEP")
+dbgap = stats_df_male[[2]]%>% as.data.frame() %>% mutate(dataset = "dbGaP")
+hitdip = stats_df_male[[3]]%>% as.data.frame() %>% mutate(dataset = "HiTDiP")
+le = stats_df_male[[4]]%>% as.data.frame() %>% mutate(dataset = "Le")
+mostafavi = stats_df_male[[5]]%>% as.data.frame() %>% mutate(dataset = "Mostafavi")
+
+corr_data <- rbind(biodep, dbgap, hitdip, le, mostafavi) %>% mutate(signed_pval = -log10(as.numeric(pvals))*sign(as.numeric(tvals)))
+
+corr_data <- corr_data %>% dplyr::select(modules, dataset, signed_pval) %>% dcast(modules ~ dataset, value.var = "signed_pval") %>% column_to_rownames("modules") %>% as.matrix()
+
+corr_plot_data2 <- rcorr(corr_data, type = "pearson")
+corr_plot_data2$P[is.na(corr_plot_data2$P) == T] <- 0
+corr_plot_data2$r[corr_plot_data2$r == 1] <- 0
+diag(corr_plot_data2$P) <- 1
+
+
+signif_func <- function(x){
+  case_when(x < 1e-04 ~ "****",
+            x <0.001 & x >= 1e-04 ~ "***",
+            x <0.01 & x >= 0.001 ~"**",
+            x<0.05 & x >= 0.01 ~"*",
+            x >= 0.05 ~ " ")
+}
+
+
+signif_labels <- corr_plot_data2$P %>% as.data.frame() %>% mutate(across(.cols = everything(), signif_func, .names = "signif_{col}"))
+signif_labels <- signif_labels %>%
+  dplyr::select(signif_BIODEP, signif_dbGaP, signif_Le, signif_Mostafavi, signif_HiTDiP) %>%
+  setNames(c("BIODEP", "dbGaP", "Le", "Mostafavi", "HiTDiP")) %>% as.matrix()
+textMatrix = paste(signif(corr_plot_data2$r, 2), "\n", signif_labels, sep = "")
+dim(textMatrix) = dim(corr_plot_data2$r)
+textMatrix[textMatrix == "0\n "] <- ""
+
+pdf("Correlation_dendrogram_heatmap_five_datasets_cc_wgcna_male.pdf", width = 8, height = 5)
+
+heatmap.2(corr_plot_data2$r, dendrogram = "column", trace = "none", hline = NULL, vline = NULL, cellnote = textMatrix, notecol = "grey20", col = "bluered", margins = c(8,8), revC = T, asp = 1, lwid = c(0.55,0.55), keysize = 1.5, key.title = "Pearson's correlation", density.info = "none", breaks = seq(-1,1,0.025), symkey = F, cexRow = 1, cexCol = 1, key.xlab = "")
+dev.off()
+
+```
+
+
+Module-smoking association
+
+```{r}
+metd_trait = metd_d %>% filter(sex == "Female") %>% filter(Disorder == "MDD") %>% mutate(smoker = ifelse(Smoker == 1, "Yes", "No")) %>%  dplyr::select(sample_id_match, smoker)
+MEs = net_fem$multiMEs[[2]]$data
+MEs <- as.data.frame(MEs) %>% rownames_to_column("sample_id_match") %>% merge(., metd_trait, by = "sample_id_match") 
+MEs <- melt(MEs, id.vars = c("sample_id_match", "smoker"))
+ttestdf <- MEs %>% group_by(variable) %>% summarise(p.value = t.test(value ~ smoker)$p.value, t.value = t.test(value ~ smoker)$statistic) %>% mutate(sign = sign(t.value), overall_eff_dir = if_else(sign == -1, '-', '+')) %>% dplyr::select(-sign)
+ptest <- MEs %>% group_by(variable) %>% summarise(p.value = t.test(value ~ smoker)$p.value) %>% mutate(smoker = "No", value = 0.15)
+
+
+metd_trait = metd_d %>% filter(sex == "Male") %>% filter(Disorder == "MDD") %>% mutate(smoker = ifelse(Smoker == 1, "Yes", "No")) %>%  dplyr::select(sample_id_match, smoker)
+MEs = net_male$multiMEs[[2]]$data
+MEs <- as.data.frame(MEs) %>% rownames_to_column("sample_id_match") %>% merge(., metd_trait, by = "sample_id_match") 
+MEs <- melt(MEs, id.vars = c("sample_id_match", "smoker"))
+ttestdm <- MEs %>% group_by(variable) %>% summarise(p.value = t.test(value ~ smoker)$p.value, t.value = t.test(value ~ smoker)$statistic) %>% mutate(sign = sign(t.value), overall_eff_dir = if_else(sign == -1, '-', '+')) %>% dplyr::select(-sign)
+ptest <- MEs %>% group_by(variable) %>% summarise(p.value = t.test(value ~ smoker)$p.value) %>% mutate(smoker = "No", value = 0.15)
+
+
+metd_trait = merge(metd_m, metad_merged, by.x = "sample_id_match", by.y = "cell_id") %>% filter(Sex == "F") %>% filter(Disorder == "MDD") %>% mutate(smoker = ifelse(smoking == 0, "No", "Yes")) %>%  dplyr::select(sample_id_match, smoker)
+MEs = net_fem$multiMEs[[5]]$data
+MEs <- as.data.frame(MEs) %>% rownames_to_column("sample_id_match") %>% merge(., metd_trait, by = "sample_id_match") 
+MEs <- melt(MEs, id.vars = c("sample_id_match", "smoker"))
+ttestmf <- MEs %>% group_by(variable) %>% summarise(p.value = t.test(value ~ smoker)$p.value, t.value = t.test(value ~ smoker)$statistic) %>% mutate(sign = sign(t.value), overall_eff_dir = if_else(sign == -1, '-', '+')) %>% dplyr::select(-sign)
+ptest <- MEs %>% group_by(variable) %>% summarise(p.value = t.test(value ~ smoker)$p.value) %>% mutate(smoker = "No", value = 0.21)
+
+
+metd_trait = merge(metd_m, metad_merged, by.x = "sample_id_match", by.y = "cell_id") %>% filter(Sex == "M") %>% filter(Disorder == "MDD") %>% mutate(smoker = ifelse(smoking == 0, "No", "Yes")) %>%  dplyr::select(sample_id_match, smoker)
+MEs = net_male$multiMEs[[5]]$data
+MEs <- as.data.frame(MEs) %>% rownames_to_column("sample_id_match") %>% merge(., metd_trait, by = "sample_id_match") 
+MEs <- melt(MEs, id.vars = c("sample_id_match", "smoker"))
+ttestmm <- MEs %>% group_by(variable) %>% summarise(p.value = t.test(value ~ smoker)$p.value, t.value = t.test(value ~ smoker)$statistic) %>% mutate(sign = sign(t.value), overall_eff_dir = if_else(sign == -1, '-', '+')) %>% dplyr::select(-sign)
+ptest <- MEs %>% group_by(variable) %>% summarise(p.value = t.test(value ~ smoker)$p.value) %>% mutate(smoker = "No", value = 0.21)
+
+
+ttestf <- merge(ttestdf, ttestmf, by = "variable") %>% setNames(c("module", "dbGaP.pvalue", "dbGaP.tvalue", "dbGaP.overall.eff.direction", "Mostafavi.pvalue", "Mostafavi.tvalue", "Mostafavi.overall.eff.direction")) %>% filter(module != "ME0")
+ttestm <- merge(ttestdm, ttestmm, by = "variable") %>% setNames(c("module", "dbGaP.pvalue", "dbGaP.tvalue", "dbGaP.overall.eff.direction", "Mostafavi.pvalue", "Mostafavi.tvalue", "Mostafavi.overall.eff.direction")) %>% filter(module != "ME0")
+
+ttestf %>% write.table(., file = "WGCNA_smoker_female_t_test.txt", quote = F, row.names = F, sep = "\t")
+ttestm %>% write.table(., file = "WGCNA_smoker_male_t_test.txt", quote = F, row.names = F, sep = "\t")
+
+```
+
+Leave-one-out analysis: without dbGaP
+
+```{r}
+fem_t_test_res <- read.table("Cohens_D_individual_dataset_female_consensus_modules_ttest.txt", header = T, stringsAsFactors = F) %>% filter(dataset != "dbGaP")
+
+fem_t_test_res_pval <- fem_t_test_res %>% dplyr::select(modules, pvals, dataset) %>% dcast(., formula = modules ~ dataset, value.var = "pvals") %>% column_to_rownames("modules") %>% t() %>% as.data.frame() %>% as.list()
+fem_t_test_res_sign <- fem_t_test_res %>% mutate(sign = sign(tvals)) %>% dplyr::select(modules, sign, dataset) %>% dcast(., formula = modules ~ dataset, value.var = "sign") %>% column_to_rownames("modules") %>% t() %>% as.data.frame() %>% as.list()
+weight_vals <- c(146, 134, 89, 630)
+
+source("wZ.R")
+wZ_scores_female <- c()
+for (i in names(fem_t_test_res_pval)){
+ temp <- wZ(p = fem_t_test_res_pval[[i]], weight = weight_vals, is.onetail = F, eff.sign = fem_t_test_res_sign[[i]])
+ wZ_scores_female <- rbind(wZ_scores_female, temp)
+}
+
+wZ_scores_female <- wZ_scores_female %>% as.data.frame()
+rownames(wZ_scores_female) <- names(fem_t_test_res_pval)
+wZ_scores_female$fdr <- p.adjust(wZ_scores_female$p, method = "BH")
+```
+
+
+```{r}
+male_t_test_res <- read.table("Cohens_D_individual_dataset_male_consensus_modules_ttest.txt", header = T, stringsAsFactors = F) %>% filter(dataset != "dbGaP")
+
+male_t_test_res_pval <- male_t_test_res %>% dplyr::select(modules, pvals, dataset) %>% dcast(., formula = modules ~ dataset, value.var = "pvals") %>% column_to_rownames("modules") %>% t() %>% as.data.frame() %>% as.list()
+male_t_test_res_sign <- male_t_test_res %>% mutate(sign = sign(tvals)) %>% dplyr::select(modules, sign, dataset) %>% dcast(., formula = modules ~ dataset, value.var = "sign") %>% column_to_rownames("modules") %>% t() %>% as.data.frame() %>% as.list()
+weight_vals <- c(65, 47, 64, 266)
+
+wZ_scores_male <- c()
+for (i in names(male_t_test_res_pval)){
+ temp <- wZ(p = male_t_test_res_pval[[i]], weight = weight_vals, is.onetail = F, eff.sign = male_t_test_res_sign[[i]])
+ wZ_scores_male <- rbind(wZ_scores_male, temp)
+}
+
+wZ_scores_male <- wZ_scores_male %>% as.data.frame()
+rownames(wZ_scores_male) <- names(male_t_test_res_pval)
+wZ_scores_male$fdr <- p.adjust(wZ_scores_male$p, method = "BH")
+```
+
+weighted cohen's d calculate
+
+```{r}
+fem_t_test_res_cohensd <- fem_t_test_res %>% dplyr::select(modules, cohens_d, dataset) %>% dcast(., formula = modules ~ dataset, value.var = "cohens_d") %>% column_to_rownames("modules") %>% t() %>% as.data.frame() %>% as.list()
+weight_vals <- c(146, 134, 89, 630)
+
+weighted_means_f <- c()
+for(i in seq(1, 8, 1)){
+  cohens_d <- as.numeric(fem_t_test_res_cohensd[[i]])
+  modules <- names(fem_t_test_res_cohensd[i])
+  weighted_mean_f <- weighted.mean(x = cohens_d, w = weight_vals)
+  weighted_means_f <- rbind(weighted_means_f, cbind(modules, weighted_mean_f))
+}
+
+weighted_means_f <- as.data.frame(weighted_means_f)
+
+wZ_scores_female <- wZ_scores_female %>% rownames_to_column("modules") %>% merge(., weighted_means_f, by = "modules", all.x = T)
+colnames(wZ_scores_female)[6] <- "weighted_mean_cohens_d"
+```
+
+
+```{r}
+male_t_test_res_cohensd <- male_t_test_res %>% dplyr::select(modules, cohens_d, dataset) %>% dcast(., formula = modules ~ dataset, value.var = "cohens_d") %>% column_to_rownames("modules") %>% t() %>% as.data.frame() %>% as.list()
+weight_vals <- c(65, 47, 64, 266)
+
+weighted_means_m <- c()
+for(i in seq(1, 11, 1)){
+  cohens_d <- as.numeric(male_t_test_res_cohensd[[i]])
+  modules <- names(male_t_test_res_cohensd[i])
+  weighted_mean_m <- weighted.mean(x = cohens_d, w = weight_vals)
+  weighted_means_m <- rbind(weighted_means_m, cbind(modules, weighted_mean_m))
+}
+
+weighted_means_m <- as.data.frame(weighted_means_m)
+
+wZ_scores_male <- wZ_scores_male %>% rownames_to_column("modules") %>% merge(., weighted_means_m, by = "modules", all.x = T)
+colnames(wZ_scores_male)[6] <- "weighted_mean_cohens_d"
+```
+
+
+```{r}
+wZ_scores_male %>% arrange(fdr) %>% as.matrix() %>%
+  write.table(., file = "WGCNA_wZ_scores_male_t_test_wo_dbGaP.txt", quote = F, row.names = F, sep = "\t")
+wZ_scores_female %>% arrange(fdr) %>% as.matrix() %>%
+  write.table(., file = "WGCNA_wZ_scores_female_t_test_wo_dbGaP.txt", quote = F, row.names = F, sep = "\t")
+```

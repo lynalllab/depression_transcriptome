@@ -1,0 +1,81 @@
+---
+title: "BIODEP data processing"
+output: html_notebook
+---
+
+Loading required libraries
+
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(reshape2)
+library(tibble)
+library(edgeR)
+```
+
+ 
+```{r}
+final_metadata <- read.table("biodep_metadata.txt", header = T, sep ="\t", stringsAsFactors = F) %>%
+  filter(is.na(RNA.Sample) == F) %>% filter(RIN >= 8) %>% mutate(sample_id_match = paste("X", RNA.Sample, sep = "")) %>% mutate(Age = round(as.yearmon(Date.of.Blood.Draw)- as.yearmon(DOB),digits = 1)) %>% filter(Correct_Subject.ID != "2080") #participant requested to be removed
+```
+
+Read in gene count expression data
+
+```{r}
+counts <- read.table('count_table.csv', sep = ',', header = T, stringsAsFactors = F)
+
+counts_samples <- counts %>% dplyr::select(X:gene_biotype, one_of(dput(as.character(final_metadata$sample_id_match)))) %>% dplyr::select(-c(X, source, gene_version))
+
+gene_info <- counts_samples %>% dplyr::select(gene_id:gene_biotype)
+counts_samples <- counts_samples %>% column_to_rownames("gene_id") %>% dplyr::select(-c(gene_name, gene_biotype))
+```
+
+Retain metadata for samples with corresponding count data
+
+```{r}
+final_metadata <- final_metadata %>% filter(sample_id_match %in% colnames(counts_samples)) %>% mutate(group = if_else(study_arm == 1, "CNT", "MDD"))
+```
+
+Create male and female subsets
+
+```{r}
+final_metadata_male <- final_metadata %>% filter(Sex =="Male")
+final_metadata_female <- final_metadata %>% filter(Sex == "Female")
+
+
+counts_samples_male <- counts_samples %>% dplyr::select(one_of(dput(as.character(final_metadata_male$sample_id_match))))
+
+counts_samples_female <- counts_samples %>% 
+  dplyr::select( one_of(dput(as.character(final_metadata_female$sample_id_match))))
+```
+
+Filter count data
+
+```{r}
+data_filtered <- DGEList(counts = counts_samples, genes = gene_info,  group = final_metadata$group)
+keep <- filterByExpr(data_filtered)
+data_filtered <- data_filtered[keep, , keep.lib.sizes=FALSE]
+
+data_filtered_male <- DGEList(counts = counts_samples_male, genes = gene_info,  group = final_metadata_male$group)
+keep <- filterByExpr(data_filtered_male)
+data_filtered_male <- data_filtered_male[keep, , keep.lib.sizes=FALSE]
+
+data_filtered_female <- DGEList(counts = counts_samples_female, genes = gene_info,  group = final_metadata_female$group)
+keep <- filterByExpr(data_filtered_female)
+data_filtered_female <- data_filtered_female[keep, , keep.lib.sizes=FALSE]
+```
+
+Normalise count data
+
+```{r}
+data_filtered <- calcNormFactors(data_filtered)
+data_filtered_male <- calcNormFactors(data_filtered_male)
+data_filtered_female <- calcNormFactors(data_filtered_female)
+
+data_normalised <- cpm(data_filtered, log = T, prior.count = 0.5)
+data_normalised_male <- cpm(data_filtered_male, log = T, prior.count = 0.5)
+data_normalised_female <- cpm(data_filtered_female, log = T, prior.count = 0.5)
+```
+

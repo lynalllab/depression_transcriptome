@@ -1,0 +1,594 @@
+---
+title: "DTU"
+output: html_notebook
+---
+
+Loading required libraries
+
+
+```{r}
+library(dplyr)
+library(tibble)
+library(tidyr)
+library(stringr)
+suppressPackageStartupMessages(library(IsoformSwitchAnalyzeR))
+library(tximeta)
+library(ggplot2)
+library(ggpubr)
+library(tximport)
+library(GenomicFeatures)
+library(DEXSeq)
+library(stageR)
+library(gridExtra)
+library(data.table)
+library(reshape2)
+```
+
+The three RNA-Seq datasets: BIODEP, Le, and Mostafavi, were analysed using this DTU template - dataset-specific codes have been provided where appropriate. 
+Biodep analysis is presented here as an example
+
+```{r}
+source("dtu_function.R")
+```
+
+
+--------------
+TXDB object
+--------------
+
+```{r}
+txdb <- makeTxDbFromGFF("../salmon/Homo_sapiens.GRCh38.84.chr_patch_hapl_scaff.gtf")
+```
+
+
+Create required metadata file
+
+```{r}
+metadata <- final_metadata %>% mutate(condition = if_else(study_arm == 1, "CNT", "MDD"), names = paste(sample_id_match, "_R1.fastq.trimmed.fastq.salmon", sep = "")) %>% dplyr::select(names, condition, sample_id_match, Centre, Plate.ID, Age, Sex)
+metadata[,c(2,4,5,7)] <- lapply(metadata[,c(2,4,5,7)], factor)
+
+setwd("~")
+metadata$files <- file.path("E:/BIODEP/salmon/results/", metadata$names, "quant.sf")
+
+all(file.exists(metadata$files))
+
+#configuring according to prepareSalmonFileDataFrame()
+metadata <- metadata %>% dplyr::select(files, names:Sex) 
+```
+
+
+---------------------------
+Not cell-corrected analysis
+---------------------------
+
+DTU analysis
+
+#pooled
+
+```{r}
+samp_vect <- as.vector(metadata$files)
+names(samp_vect) <- metadata$sample_id_match
+
+prefilter(sample_vector = samp_vect, metadata_info = metadata, sample_id_column_name = "sample_id_match", output_suffix = "pooled")
+```
+
+```{r}
+txi <- tximport::tximport(files = samp_vect, type = "salmon", txOut = TRUE, countsFromAbundance="scaledTPM")
+cnts <- txi$counts
+print(paste("No. of isoforms in imported data: ", dim(cnts)[1]))
+
+switchlist_tsc_ids <- switchlist_pooled[["isoformFeatures"]][["isoform_id"]] %>% as.data.frame() %>% setNames("tsc_id")
+
+cnts <- cnts %>% as.data.frame() %>% rownames_to_column("tsc_id") %>% separate(tsc_id, into = c("tscid", NA), sep = "\\.") %>% filter(tscid %in% switchlist_tsc_ids$tsc_id) %>% column_to_rownames("tscid") %>% as.matrix()
+print(paste("No. of isoforms in filtered data: ", dim(cnts)[1]))
+
+suppressMessages(txdf <- AnnotationDbi::select(txdb, keys(txdb, "GENEID"), "TXNAME", "GENEID"))
+tab <- table(txdf$GENEID)
+txdf$ntx <- tab[match(txdf$GENEID, names(tab))]
+  
+if(all(rownames(cnts) %in% txdf$TXNAME)){
+  txdf <- txdf[match(rownames(cnts),txdf$TXNAME),]
+} else {
+  print("Error in matching filtered list to imported data")
+}
+
+counts_dat <- data.frame(gene_id=txdf$GENEID, feature_id=txdf$TXNAME, cnts)
+samps <- data.frame(sample_id = metadata$sample_id_match, condition = metadata$condition, Centre = metadata$Centre, Plate.ID = metadata$Plate.ID, Age = metadata$Age, Sex = metadata$Sex)
+
+for(i in 1:ncol(samps)){
+  if(class(samps[,i]) %in% c("numeric", "integer")){
+    samps[,i] <- scale(samps[,i])[,1]
+  }
+}
+  
+row.names(samps) <- NULL
+  
+formulaReducedModel <- '~ sample + exon'
+if (ncol(samps) > 2) {
+  formulaReducedModel <- paste(formulaReducedModel, '+', paste(paste0(colnames(samps)[3:ncol(samps)],':exon'), collapse = ' + '), sep=' ')
+}
+formulaFullModel <- paste(formulaReducedModel, '+ condition:exon', sep=' ')
+
+formulaFullModel <- as.formula(formulaFullModel)
+formulaReducedModel <- as.formula(formulaReducedModel)
+print(formulaFullModel)
+
+count.data <- round(as.matrix(counts_dat[,-c(1:2)]))
+
+dxd <- DEXSeq::DEXSeqDataSet(countData=count.data, sampleData=samps, design=formulaFullModel, featureID=counts_dat$feature_id, groupID=counts_dat$gene_id)
+
+print(sampleAnnotation(dxd))
+
+dxd <- DEXSeq::estimateSizeFactors(dxd)
+dxd <- DEXSeq::estimateDispersions(dxd, BPPARAM = SnowParam(15), formula = formulaFullModel)
+dxd <- DEXSeq::testForDEU(dxd, reducedModel=formulaReducedModel, fullModel = formulaFullModel, BPPARAM = SnowParam(15))
+
+dxr <- DEXSeq::DEXSeqResults(dxd, independentFiltering=F)
+qval <- DEXSeq::perGeneQValue(dxr)
+
+gene_q_pooled <- data.frame(gene=names(qval),qval)
+tsc_p_pooled <- as.data.frame(dxr[, c("featureID","groupID","pvalue")])
+dxd_obj_pooled <- dxd
+samps_pooled <- samps
+
+rm(dxr, qval, count.data, counts_dat, txi, cnts, dxd, samps, switchlist_tsc_ids, txdf, formulaFullModel, formulaReducedModel, i, tab)  
+```
+
+```{r}
+run_stager(transcript_pval = tsc_p_pooled, gene_qval = gene_q_pooled, dataset_name = "biodep", output_suffix = "ncc_pooled", cutoff = 0.05, allow_NAs = F)
+#generates data frame with results named "biodep_dtu_result_ncc_pooled"
+#no results to plot here
+```
+
+#male
+
+```{r}
+metadata_male <- metadata %>% filter(Sex  == "Male") %>% dplyr::select(-Sex)
+samp_vect <- as.vector(metadata_male$files)
+names(samp_vect) <- metadata_male$sample_id_match
+
+prefilter(sample_vector = samp_vect, metadata_info = metadata_male, sample_id_column_name = "sample_id_match", output_suffix = "male")
+```
+
+
+```{r}
+txi <- tximport::tximport(files = samp_vect, type = "salmon", txOut = TRUE, countsFromAbundance="scaledTPM")
+cnts <- txi$counts
+print(paste("No. of isoforms in imported data: ", dim(cnts)[1]))
+
+
+switchlist_tsc_ids <- switchlist_male[["isoformFeatures"]][["isoform_id"]] %>% as.data.frame() %>% setNames("tsc_id")
+
+cnts <- cnts %>% as.data.frame() %>% rownames_to_column("tsc_id") %>% separate(tsc_id, into = c("tscid", NA), sep = "\\.") %>% filter(tscid %in% switchlist_tsc_ids$tsc_id) %>% column_to_rownames("tscid") %>% as.matrix()
+print(paste("No. of isoforms in filtered data: ", dim(cnts)[1]))
+
+suppressMessages(txdf <- AnnotationDbi::select(txdb, keys(txdb, "GENEID"), "TXNAME", "GENEID"))
+tab <- table(txdf$GENEID)
+txdf$ntx <- tab[match(txdf$GENEID, names(tab))]
+  
+if(all(rownames(cnts) %in% txdf$TXNAME)){
+  txdf <- txdf[match(rownames(cnts),txdf$TXNAME),]
+} else {
+  print("Error in matching filtered list to imported data")
+}
+
+counts_dat <- data.frame(gene_id=txdf$GENEID, feature_id=txdf$TXNAME, cnts)
+samps <- data.frame(sample_id = metadata_male$sample_id_match, condition = metadata_male$condition, Centre = metadata_male$Centre, Plate.ID = metadata_male$Plate.ID, Age = metadata_male$Age)
+
+for(i in 1:ncol(samps)){
+  if(class(samps[,i]) %in% c("numeric", "integer")){
+    samps[,i] <- scale(samps[,i])[,1]
+  }
+}
+  
+row.names(samps) <- NULL
+  
+formulaReducedModel <- '~ sample + exon'
+if (ncol(samps) > 2) {
+  formulaReducedModel <- paste(formulaReducedModel, '+', paste(paste0(colnames(samps)[3:ncol(samps)],':exon'), collapse = ' + '), sep=' ')
+}
+formulaFullModel <- paste(formulaReducedModel, '+ condition:exon', sep=' ')
+
+formulaFullModel <- as.formula(formulaFullModel)
+formulaReducedModel <- as.formula(formulaReducedModel)
+
+count.data <- round(as.matrix(counts_dat[,-c(1:2)]))
+
+dxd <- DEXSeq::DEXSeqDataSet(countData=count.data, sampleData=samps, design=formulaFullModel, featureID=counts_dat$feature_id, groupID=counts_dat$gene_id)
+
+print(sampleAnnotation(dxd))
+
+dxd <- DEXSeq::estimateSizeFactors(dxd)
+dxd <- DEXSeq::estimateDispersions(dxd, BPPARAM = SnowParam(15), formula = formulaFullModel)
+dxd <- DEXSeq::testForDEU(dxd, reducedModel=formulaReducedModel, fullModel = formulaFullModel, BPPARAM = SnowParam(15))
+
+dxr <- DEXSeq::DEXSeqResults(dxd, independentFiltering=F)
+qval <- DEXSeq::perGeneQValue(dxr)
+
+gene_q_male <- data.frame(gene=names(qval),qval)
+tsc_p_male <- as.data.frame(dxr[, c("featureID","groupID","pvalue")])
+dxd_obj_male <- dxd
+samps_male <- samps
+
+rm(dxr, qval, count.data, counts_dat, txi, cnts, dxd, samps, switchlist_tsc_ids, txdf, formulaFullModel, formulaReducedModel, i, tab)  
+```
+
+```{r}
+run_stager(transcript_pval = tsc_p_male, gene_qval = gene_q_male, dataset_name = "biodep", output_suffix = "ncc_male", cutoff = 0.05, allow_NAs = TRUE)
+
+#plot results
+#expression plots:
+plot_dtu_expression(dxd_object = dxd_obj_male, dtu_result = biodep_dtu_result_ncc_male, sample_info = samps_male, cutoff = 0.05, outname = "expr_male")
+plot_dtu_expression(dxd_object = dxd_obj_male, dtu_result = biodep_dtu_result_ncc_male, sample_info = samps_male, cutoff = 0.05, outname = "expr_male_log", logtransform = T)
+
+#isoform fraction plots: 
+plot_IF_dtu(switchlist = switchlist_male, dtu_result = biodep_dtu_result_ncc_male, samp_info = metadata_male, outname = "IF_dtu_male")
+plot_IF_dtu(switchlist = switchlist_male, dtu_result = biodep_dtu_result_ncc_male, samp_info = metadata_male, outname = "IF_dtu_male_clear", clear = TRUE)
+
+#switchplots
+switchplot_part1(switchlist = switchlist_male, dtu_result = biodep_dtu_result_ncc_male, fasta_suffix = "male")
+#load results from external analysis
+#cpc2: https://cpc2.gao-lab.org/
+#iupred: https://iupred2a.elte.hu/
+#pfam: https://www.ebi.ac.uk/Tools/hmmer/search/hmmscan
+#signalp: https://services.healthtech.dtu.dk/services/SignalP-5.0/
+switchplot_part2(switchlist = switchlist_male, outname = "switch_male_2", pathtocpc2file = "male_cpc2.txt", pathtoiupred = "male_iupred.txt", pathtopfam = "male_pfam.txt", pathtosignalp = "male_signalp.txt", analyze_pfam = F)
+                     
+```
+
+--------------
+Female analysis
+--------------
+
+```{r}
+metadata_fem <- metadata %>% filter(Sex  == "Female") %>% dplyr::select(-Sex)
+
+samp_vect <- as.vector(metadata_fem$files)
+names(samp_vect) <- metadata_fem$sample_id_match
+
+prefilter(sample_vector = samp_vect, metadata_info = metadata_fem, sample_id_column_name = "sample_id_match", output_suffix = "fem")
+```
+
+
+```{r}
+txi <- tximport::tximport(files = samp_vect, type = "salmon", txOut = TRUE, countsFromAbundance="scaledTPM")
+cnts <- txi$counts
+print(paste("No. of isoforms in imported data: ", dim(cnts)[1]))
+
+switchlist_tsc_ids <- switchlist_fem[["isoformFeatures"]][["isoform_id"]] %>% as.data.frame() %>% setNames("tsc_id")
+
+cnts <- cnts %>% as.data.frame() %>% rownames_to_column("tsc_id") %>% separate(tsc_id, into = c("tscid", NA), sep = "\\.") %>% filter(tscid %in% switchlist_tsc_ids$tsc_id) %>% column_to_rownames("tscid") %>% as.matrix()
+print(paste("No. of isoforms in filtered data: ", dim(cnts)[1]))
+
+suppressMessages(txdf <- AnnotationDbi::select(txdb, keys(txdb, "GENEID"), "TXNAME", "GENEID"))
+tab <- table(txdf$GENEID)
+txdf$ntx <- tab[match(txdf$GENEID, names(tab))]
+  
+if(all(rownames(cnts) %in% txdf$TXNAME)){
+  txdf <- txdf[match(rownames(cnts),txdf$TXNAME),]
+} else {
+  print("Error in matching filtered list to imported data")
+}
+
+counts_dat <- data.frame(gene_id=txdf$GENEID, feature_id=txdf$TXNAME, cnts)
+samps <- data.frame(sample_id = metadata_fem$sample_id_match, condition = metadata_fem$condition, Centre = metadata_fem$Centre, Plate.ID = metadata_fem$Plate.ID, Age = metadata_fem$Age)
+
+for(i in 1:ncol(samps)){
+  if(class(samps[,i]) %in% c("numeric", "integer")){
+    samps[,i] <- scale(samps[,i])[,1]
+  }
+}
+  
+row.names(samps) <- NULL
+  
+formulaReducedModel <- '~ sample + exon'
+if (ncol(samps) > 2) {
+  formulaReducedModel <- paste(formulaReducedModel, '+', paste(paste0(colnames(samps)[3:ncol(samps)],':exon'), collapse = ' + '), sep=' ')
+}
+formulaFullModel <- paste(formulaReducedModel, '+ condition:exon', sep=' ')
+
+formulaFullModel <- as.formula(formulaFullModel)
+formulaReducedModel <- as.formula(formulaReducedModel)
+
+count.data <- round(as.matrix(counts_dat[,-c(1:2)]))
+
+dxd <- DEXSeq::DEXSeqDataSet(countData=count.data, sampleData=samps, design=formulaFullModel, featureID=counts_dat$feature_id, groupID=counts_dat$gene_id)
+
+print(sampleAnnotation(dxd))
+
+dxd <- DEXSeq::estimateSizeFactors(dxd)
+dxd <- DEXSeq::estimateDispersions(dxd, BPPARAM = SnowParam(15), formula = formulaFullModel)
+dxd <- DEXSeq::testForDEU(dxd, reducedModel=formulaReducedModel, fullModel = formulaFullModel, BPPARAM = SnowParam(15))
+
+dxr <- DEXSeq::DEXSeqResults(dxd, independentFiltering=F)
+qval <- DEXSeq::perGeneQValue(dxr)
+
+##assign correct suffixes!!!
+gene_q_fem <- data.frame(gene=names(qval),qval)
+tsc_p_fem <- as.data.frame(dxr[, c("featureID","groupID","pvalue")])
+dxd_obj_fem <- dxd
+samps_fem <- samps
+
+rm(dxr, qval, count.data, counts_dat, txi, cnts, dxd, samps, switchlist_tsc_ids, txdf, formulaFullModel, formulaReducedModel, i, tab)  
+```
+
+```{r}
+run_stager(transcript_pval = tsc_p_fem, gene_qval = gene_q_fem, dataset_name = "biodep", output_suffix = "ncc_fem", cutoff = 0.05, allow_NAs = F)
+
+#plot results
+#expression plots:
+plot_dtu_expression(dxd_object = dxd_obj_fem, dtu_result = biodep_dtu_result_ncc_fem, sample_info = samps_fem, cutoff = 0.05, outname = "expr_fem")
+plot_dtu_expression(dxd_object = dxd_obj_fem, dtu_result = biodep_dtu_result_ncc_fem, sample_info = samps_fem, cutoff = 0.05, outname = "expr_fem_log", logtransform = T)
+
+#isoform fraction plots:
+plot_IF_dtu(switchlist = switchlist_fem, dtu_result = biodep_dtu_result_ncc_fem, samp_info = metadata_fem, outname = "IF_dtu_fem")
+plot_IF_dtu(switchlist = switchlist_fem, dtu_result = biodep_dtu_result_ncc_fem, samp_info = metadata_fem, outname = "IF_dtu_fem_clear", clear = TRUE)
+
+#switchplots
+switchplot_part1(switchlist = switchlist_fem, dtu_result = biodep_dtu_result_ncc_fem, fasta_suffix = "fem")
+#load results from external analysis
+#cpc2: https://cpc2.gao-lab.org/
+#iupred: https://iupred2a.elte.hu/
+#pfam: https://www.ebi.ac.uk/Tools/hmmer/search/hmmscan
+#signalp: https://services.healthtech.dtu.dk/services/SignalP-5.0/
+switchplot_part2(switchlist = switchlist_fem, outname = "switch_fem", pathtocpc2file = "fem_cpc2.txt", pathtoiupred = "fem_iupred.txt", pathtopfam = "fem_pfam.txt", pathtosignalp = "fem_signalp.txt", analyzeSplicing = T, analyze_iupred = F)
+```
+
+
+-----------------------
+Cell-corrected analysis
+-----------------------
+
+```{r}
+colnames(imputed_metadata)[21] <- "condition"
+metadata_cc <- imputed_metadata %>% mutate(names = paste(sample_id_match, "_R1.fastq.trimmed.fastq.salmon", sep = "")) %>% dplyr::select(names, condition, sample_id_match, Centre, Plate.ID, Age, Sex, macs_b_of_total:macs_mono_class_of_total,  macs_mono_cd16hi_of_total, macs_nk_of_total)
+metadata_cc[,c(4,5)] <- lapply(metadata_cc[,c(4,5)], factor)
+
+setwd("~")
+metadata_cc$files <- file.path("E:/CERA_desktop/Large_datasets/BIODEP/salmon/results_all_gen", metadata_cc$names, "quant.sf")
+
+all(file.exists(metadata_cc$files))
+
+#configuring according to prepareSalmonFileDataFrame()
+metadata_cc <- metadata_cc %>% dplyr::select(files, names:macs_nk_of_total) 
+
+```
+
+
+#pooled
+```{r}
+samp_vect <- as.vector(metadata_cc$files)
+names(samp_vect) <- metadata_cc$sample_id_match
+```
+
+```{r}
+prefilter(sample_vector = samp_vect, metadata_info = metadata_cc, sample_id_column_name = "sample_id_match", output_suffix = "pooled_cc")
+```
+
+
+```{r}
+txi <- tximport::tximport(files = samp_vect, type = "salmon", txOut = TRUE, countsFromAbundance="scaledTPM")
+cnts <- txi$counts
+print(paste("No. of isoforms in imported data: ", dim(cnts)[1]))
+
+switchlist_tsc_ids <- switchlist_pooled_cc[["isoformFeatures"]][["isoform_id"]] %>% as.data.frame() %>% setNames("tsc_id")
+
+cnts <- cnts %>% as.data.frame() %>% rownames_to_column("tsc_id") %>% separate(tsc_id, into = c("tscid", NA), sep = "\\.") %>% filter(tscid %in% switchlist_tsc_ids$tsc_id) %>% column_to_rownames("tscid") %>% as.matrix()
+print(paste("No. of isoforms in filtered data: ", dim(cnts)[1]))
+
+suppressMessages(txdf <- AnnotationDbi::select(txdb, keys(txdb, "GENEID"), "TXNAME", "GENEID"))
+tab <- table(txdf$GENEID)
+txdf$ntx <- tab[match(txdf$GENEID, names(tab))]
+  
+if(all(rownames(cnts) %in% txdf$TXNAME)){
+  txdf <- txdf[match(rownames(cnts),txdf$TXNAME),]
+} else {
+  print("Error in matching filtered list to imported data")
+}
+
+counts_dat <- data.frame(gene_id=txdf$GENEID, feature_id=txdf$TXNAME, cnts)
+samps <- metadata_cc %>% dplyr::select(sample_id_match, condition, Centre:macs_nk_of_total)
+colnames(samps)[1] <- "sample_id"
+
+for(i in 1:ncol(samps)){
+  if(class(samps[,i]) %in% c("numeric", "integer")){
+    samps[,i] <- scale(samps[,i])[,1]
+  }
+}
+  
+row.names(samps) <- NULL
+  
+formulaReducedModel <- '~ sample + exon'
+if (ncol(samps) > 2) {
+  formulaReducedModel <- paste(formulaReducedModel, '+', paste(paste0(colnames(samps)[3:ncol(samps)],':exon'), collapse = ' + '), sep=' ')
+}
+formulaFullModel <- paste(formulaReducedModel, '+ condition:exon', sep=' ')
+
+formulaFullModel <- as.formula(formulaFullModel)
+formulaReducedModel <- as.formula(formulaReducedModel)
+
+count.data <- round(as.matrix(counts_dat[,-c(1:2)]))
+
+dxd <- DEXSeq::DEXSeqDataSet(countData=count.data, sampleData=samps, design=formulaFullModel, featureID=counts_dat$feature_id, groupID=counts_dat$gene_id)
+
+print(sampleAnnotation(dxd))
+
+dxd <- DEXSeq::estimateSizeFactors(dxd)
+dxd <- DEXSeq::estimateDispersions(dxd, BPPARAM = SnowParam(15), formula = formulaFullModel)
+dxd <- DEXSeq::testForDEU(dxd, reducedModel=formulaReducedModel, fullModel = formulaFullModel, BPPARAM = SnowParam(15))
+
+dxr <- DEXSeq::DEXSeqResults(dxd, independentFiltering=F)
+qval <- DEXSeq::perGeneQValue(dxr)
+
+gene_q_pooled_cc <- data.frame(gene=names(qval),qval)
+tsc_p_pooled_cc <- as.data.frame(dxr[, c("featureID","groupID","pvalue")])
+dxd_obj_pooled_cc <- dxd
+samps_pooled_cc <- samps
+
+rm(dxr, qval, count.data, counts_dat, txi, cnts, dxd, samps, switchlist_tsc_ids, txdf, formulaFullModel, formulaReducedModel, i, tab)  
+```
+
+```{r}
+run_stager(transcript_pval = tsc_p_pooled_cc, gene_qval = gene_q_pooled_cc, dataset_name = "biodep", output_suffix = "cc_pooled", cutoff = 0.05, allow_NAs = F)
+#generates data frame with results named "biodep_dtu_result_cc_pooled"
+#no results to plot here
+```
+
+#male
+
+```{r}
+metadata_male_cc <- metadata_cc %>% filter(Sex  == "Male") %>% dplyr::select(-Sex)
+
+samp_vect <- as.vector(metadata_male_cc$files)
+names(samp_vect) <- metadata_male_cc$sample_id_match
+
+prefilter(sample_vector = samp_vect, metadata_info = metadata_male_cc, sample_id_column_name = "sample_id_match", output_suffix = "male_cc")
+```
+
+
+```{r}
+txi <- tximport::tximport(files = samp_vect, type = "salmon", txOut = TRUE, countsFromAbundance="scaledTPM")
+cnts <- txi$counts
+print(paste("No. of isoforms in imported data: ", dim(cnts)[1]))
+
+switchlist_tsc_ids <- switchlist_male_cc[["isoformFeatures"]][["isoform_id"]] %>% as.data.frame() %>% setNames("tsc_id")
+
+cnts <- cnts %>% as.data.frame() %>% rownames_to_column("tsc_id") %>% separate(tsc_id, into = c("tscid", NA), sep = "\\.") %>% filter(tscid %in% switchlist_tsc_ids$tsc_id) %>% column_to_rownames("tscid") %>% as.matrix()
+print(paste("No. of isoforms in filtered data: ", dim(cnts)[1]))
+
+suppressMessages(txdf <- AnnotationDbi::select(txdb, keys(txdb, "GENEID"), "TXNAME", "GENEID"))
+tab <- table(txdf$GENEID)
+txdf$ntx <- tab[match(txdf$GENEID, names(tab))]
+  
+if(all(rownames(cnts) %in% txdf$TXNAME)){
+  txdf <- txdf[match(rownames(cnts),txdf$TXNAME),]
+} else {
+  print("Error in matching filtered list to imported data")
+}
+
+counts_dat <- data.frame(gene_id=txdf$GENEID, feature_id=txdf$TXNAME, cnts)
+samps <- metadata_male_cc %>% dplyr::select(sample_id_match, condition, Centre:macs_nk_of_total)
+colnames(samps)[1] <- "sample_id"
+
+for(i in 1:ncol(samps)){
+  if(class(samps[,i]) %in% c("numeric", "integer")){
+    samps[,i] <- scale(samps[,i])[,1]
+  }
+}
+  
+row.names(samps) <- NULL
+  
+formulaReducedModel <- '~ sample + exon'
+if (ncol(samps) > 2) {
+  formulaReducedModel <- paste(formulaReducedModel, '+', paste(paste0(colnames(samps)[3:ncol(samps)],':exon'), collapse = ' + '), sep=' ')
+}
+formulaFullModel <- paste(formulaReducedModel, '+ condition:exon', sep=' ')
+
+formulaFullModel <- as.formula(formulaFullModel)
+formulaReducedModel <- as.formula(formulaReducedModel)
+
+count.data <- round(as.matrix(counts_dat[,-c(1:2)]))
+
+dxd <- DEXSeq::DEXSeqDataSet(countData=count.data, sampleData=samps, design=formulaFullModel, featureID=counts_dat$feature_id, groupID=counts_dat$gene_id)
+
+print(sampleAnnotation(dxd))
+
+dxd <- DEXSeq::estimateSizeFactors(dxd)
+dxd <- DEXSeq::estimateDispersions(dxd, BPPARAM = SnowParam(15), formula = formulaFullModel)
+dxd <- DEXSeq::testForDEU(dxd, reducedModel=formulaReducedModel, fullModel = formulaFullModel, BPPARAM = SnowParam(15))
+
+dxr <- DEXSeq::DEXSeqResults(dxd, independentFiltering=F)
+qval <- DEXSeq::perGeneQValue(dxr)
+
+gene_q_male_cc <- data.frame(gene=names(qval),qval)
+tsc_p_male_cc <- as.data.frame(dxr[, c("featureID","groupID","pvalue")])
+dxd_obj_male_cc <- dxd
+samps_male_cc <- samps
+
+rm(dxr, qval, count.data, counts_dat, txi, cnts, dxd, samps, switchlist_tsc_ids, txdf, formulaFullModel, formulaReducedModel, i, tab)  
+```
+
+```{r}
+run_stager(transcript_pval = tsc_p_male_cc, gene_qval = gene_q_male_cc, dataset_name = "biodep", output_suffix = "cc_male", cutoff = 0.05, allow_NAs = F)
+#no results to plot here
+```
+
+#female
+
+```{r}
+metadata_fem_cc <- metadata_cc %>% filter(Sex  == "Female") %>% dplyr::select(-Sex)
+
+samp_vect <- as.vector(metadata_fem_cc$files)
+names(samp_vect) <- metadata_fem_cc$sample_id_match
+
+prefilter(sample_vector = samp_vect, metadata_info = metadata_fem_cc, sample_id_column_name = "sample_id_match", output_suffix = "fem_cc")
+```
+
+
+```{r}
+txi <- tximport::tximport(files = samp_vect, type = "salmon", txOut = TRUE, countsFromAbundance="scaledTPM")
+cnts <- txi$counts
+print(paste("No. of isoforms in imported data: ", dim(cnts)[1]))
+
+switchlist_tsc_ids <- switchlist_fem_cc[["isoformFeatures"]][["isoform_id"]] %>% as.data.frame() %>% setNames("tsc_id")
+
+cnts <- cnts %>% as.data.frame() %>% rownames_to_column("tsc_id") %>% separate(tsc_id, into = c("tscid", NA), sep = "\\.") %>% filter(tscid %in% switchlist_tsc_ids$tsc_id) %>% column_to_rownames("tscid") %>% as.matrix()
+print(paste("No. of isoforms in filtered data: ", dim(cnts)[1]))
+
+suppressMessages(txdf <- AnnotationDbi::select(txdb, keys(txdb, "GENEID"), "TXNAME", "GENEID"))
+tab <- table(txdf$GENEID)
+txdf$ntx <- tab[match(txdf$GENEID, names(tab))]
+  
+if(all(rownames(cnts) %in% txdf$TXNAME)){
+  txdf <- txdf[match(rownames(cnts),txdf$TXNAME),]
+} else {
+  print("Error in matching filtered list to imported data")
+}
+
+counts_dat <- data.frame(gene_id=txdf$GENEID, feature_id=txdf$TXNAME, cnts)
+samps <- metadata_fem_cc %>% dplyr::select(sample_id_match, condition, Centre:macs_nk_of_total)
+colnames(samps)[1] <- "sample_id"
+
+for(i in 1:ncol(samps)){
+  if(class(samps[,i]) %in% c("numeric", "integer")){
+    samps[,i] <- scale(samps[,i])[,1]
+  }
+}
+  
+row.names(samps) <- NULL
+  
+formulaReducedModel <- '~ sample + exon'
+if (ncol(samps) > 2) {
+  formulaReducedModel <- paste(formulaReducedModel, '+', paste(paste0(colnames(samps)[3:ncol(samps)],':exon'), collapse = ' + '), sep=' ')
+}
+formulaFullModel <- paste(formulaReducedModel, '+ condition:exon', sep=' ')
+
+formulaFullModel <- as.formula(formulaFullModel)
+formulaReducedModel <- as.formula(formulaReducedModel)
+
+count.data <- round(as.matrix(counts_dat[,-c(1:2)]))
+
+dxd <- DEXSeq::DEXSeqDataSet(countData=count.data, sampleData=samps, design=formulaFullModel, featureID=counts_dat$feature_id, groupID=counts_dat$gene_id)
+
+print(sampleAnnotation(dxd))
+
+dxd <- DEXSeq::estimateSizeFactors(dxd)
+dxd <- DEXSeq::estimateDispersions(dxd, BPPARAM = SnowParam(15), formula = formulaFullModel)
+dxd <- DEXSeq::testForDEU(dxd, reducedModel=formulaReducedModel, fullModel = formulaFullModel, BPPARAM = SnowParam(15))
+
+dxr <- DEXSeq::DEXSeqResults(dxd, independentFiltering=F)
+qval <- DEXSeq::perGeneQValue(dxr)
+
+gene_q_fem_cc <- data.frame(gene=names(qval),qval)
+tsc_p_fem_cc <- as.data.frame(dxr[, c("featureID","groupID","pvalue")])
+dxd_obj_fem_cc <- dxd
+samps_fem_cc <- samps
+
+rm(dxr, qval, count.data, counts_dat, txi, cnts, dxd, samps, switchlist_tsc_ids, txdf, formulaFullModel, formulaReducedModel, i, tab)  
+```
+
+```{r}
+run_stager(transcript_pval = tsc_p_fem_cc, gene_qval = gene_q_fem_cc, dataset_name = "biodep", output_suffix = "cc_fem", cutoff = 0.05, allow_NAs = F)
+#no results to plot
+```
+

@@ -1,0 +1,343 @@
+---
+title: "DTE"
+output: html_notebook
+---
+
+Loading required libraries
+
+
+```{r}
+library(dplyr)
+library(stringr)
+library(tidyr)
+library(tximport)
+suppressPackageStartupMessages(library(SummarizedExperiment))
+library(tximeta)
+library(fishpond)
+library(limma)
+```
+
+The three RNA-Seq datasets: BIODEP, Le, and Mostafavi, were analysed using this DTE template - dataset-specific codes have been provided where appropriate. 
+Biodep analysis is presented here as an example
+
+-----------------------
+Transcript count values
+-----------------------
+
+Codes run on cluster provided for reference
+
+Run FastQC, multiQC and cutadapt - to trim reads and check for read quality before and after trimming.
+
+```{bash}
+#fastqc
+fastqc -o {output_directory}-t 30 *.fastq.gz
+
+#multiqc
+python3 -m multiqc .
+
+#cutadapt
+parallel -j 30 --link 'cutadapt -a AGATCGGAAGAGC -A AGATCGGAAGAGC -q 30 -m 50 -o ../biodep_trimmed/{1.}.trimmed.fastq.gz -p ../biodep_trimmed/{2.}.trimmed.fastq.gz {1} {2}  > ../biodep_trimmed/{1.}_cutadapt_out.txt' ::: *R1.fastq.gz ::: *R2.fastq.gz
+
+#re-run fastqc and multiqc on trimmed reads
+```
+
+
+Run salmon 
+
+```{bash}
+#create decoy
+grep "^>" <../../../Homo_sapiens.GRCh38.dna.primary_assembly.fa | cut -d " " -f 1 > decoys.txt
+sed -i.bak -e 's/>//g' decoys.txt
+
+cat ../salmon/Homo_sapiens.GRCh38.cdna.all.fa ../salmon/Homo_sapiens.GRCh38.ncrna.fa ../salmon/Homo_sapiens.GRCh38.dna.primary_assembly.fa > ../../../salmon_decoy_hg38_84_all.fa
+
+#create index
+.././salmon index -t ../salmon_decoy_hg38_84_all.fa -d decoys.txt -p 12 -k 23 --keepDuplicates -i salmon_index_38_84_with_decoy_all
+
+#run salmon
+parallel -j 2 --link '../salmon/./salmon quant -i ../salmon/salmon_index_38_84_with_decoy_all/ -l A -1 {1} -2 {2} -p 15 --seqBias --gcBias -o ../salmon/results/{1.}.salmon --softclip --numGibbsSamples 100' ::: *R1.fastq.trimmed.fastq.gz ::: *R2.fastq.trimmed.fastq.gz
+
+```
+
+---------------------------
+Not cell-corrected analysis
+---------------------------
+
+Create required metadata file for swish
+
+```{r}
+metadata <- final_metadata %>% mutate(Disorder = if_else(study_arm == 1, "CNT", "MDD"), names = paste(sample_id_match, "_R1.fastq.trimmed.fastq.salmon", sep = "")) %>% dplyr::select(names, sample_id_match, Centre, Plate.ID, Age, Disorder, Sex)
+metadata[,c(3,4,6,7)] <- lapply(metadata[,c(3,4,6,7)], factor)
+
+metadata_male <- final_metadata %>% mutate(Disorder = if_else(study_arm == 1, "CNT", "MDD"), names = paste(sample_id_match, "_R1.fastq.trimmed.fastq.salmon", sep = "")) %>% filter(Sex == "Male") %>% dplyr::select(names, sample_id_match, Centre, Plate.ID, Age, Disorder)
+metadata_male[,c(3,4,6)] <- lapply(metadata_male[,c(3,4,6)], factor)
+
+metadata_fem <- final_metadata %>% mutate(Disorder = if_else(study_arm == 1, "CNT", "MDD"), names = paste(sample_id_match, "_R1.fastq.trimmed.fastq.salmon", sep = "")) %>% filter(Sex == "Female") %>% dplyr::select(names, sample_id_match, Centre, Plate.ID, Age, Disorder)
+metadata_fem[,c(3,4,6)] <- lapply(metadata_fem[,c(3,4,6)], factor)
+
+```
+
+```{r}
+setwd("~")
+metadata$files <- file.path("E:/BIODEP/salmon/results/", metadata$names, "quant.sf")
+metadata_male$files <- file.path("E:/BIODEP/salmon/results/", metadata_male$names, "quant.sf")
+metadata_fem$files <- file.path("E:/BIODEP/salmon/results/", metadata_fem$names, "quant.sf")
+
+
+all(file.exists(metadata$files))
+all(file.exists(metadata_male$files))
+all(file.exists(metadata_fem$files))
+```
+
+```{r}
+setwd("~")
+counts_data <- tximeta(metadata)
+counts_data_male <- tximeta(metadata_male)
+counts_data_fem <- tximeta(metadata_fem)
+```
+
+pre-analysis prep
+```{r}
+counts_data <- scaleInfReps(counts_data)
+counts_data <- labelKeep(counts_data, x = "Disorder")
+counts_data <- counts_data[mcols(counts_data)$keep,]
+
+counts_data_male <- scaleInfReps(counts_data_male)
+counts_data_male <- labelKeep(counts_data_male, x = "Disorder")
+counts_data_male <- counts_data_male[mcols(counts_data_male)$keep,]
+
+counts_data_fem <- scaleInfReps(counts_data_fem)
+counts_data_fem <- labelKeep(counts_data_fem, x = "Disorder")
+counts_data_fem <- counts_data_fem[mcols(counts_data_fem)$keep,]
+```
+
+removing batch effect
+```{r}
+#pooled
+counts_data$Centre -> Centre
+counts_data$Plate.ID -> Plate.ID
+counts_data$Sex -> Sex
+counts_data$Age -> Age
+
+contrasts(Centre) <- contr.sum(levels(Centre))
+contrasts(Plate.ID) <- contr.sum(levels(Plate.ID))
+contrasts(Sex) <- contr.sum(levels(Sex))
+covariates <- model.matrix(~Centre+Plate.ID+Sex+Age)
+covariates <- covariates[,-1]
+
+
+infRepIdx <- grep("infRep",assayNames(counts_data),value=TRUE)
+nreps <- length(infRepIdx)
+
+mm <- model.matrix(~Disorder, colData(counts_data))
+pc <- 0.1 #pseudo-count
+for (k in seq_len(nreps)) {
+  logInfRep <- log(assay(counts_data, infRepIdx[k]) + pc)
+  logInfRep <- limma::removeBatchEffect(
+                        logInfRep,
+                        covariates=covariates,
+                        design=mm)
+  assay(counts_data, infRepIdx[k]) <- exp(logInfRep)
+}
+
+#male
+cov1 <- counts_data_male$Centre
+cov2 <- counts_data_male$Plate.ID
+cov3 <- counts_data_male$Age
+covs <- data.frame(cov1, cov2, cov3)
+
+infRepIdx <- grep("infRep",assayNames(counts_data_male),value=TRUE)
+nreps <- length(infRepIdx)
+
+mm <- model.matrix(~Disorder, colData(counts_data_male))
+pc <- 0.1 #pseudo-count
+for (k in seq_len(nreps)) {
+  logInfRep <- log(assay(counts_data_male, infRepIdx[k]) + pc)
+  logInfRep <- limma::removeBatchEffect(
+                        logInfRep,
+                        batch = covs$cov1,
+                        batch2 = covs$cov2,
+                        covariates=covs$cov3,
+                        design=mm)
+  assay(counts_data_male, infRepIdx[k]) <- exp(logInfRep)
+}
+
+#female
+cov1 <- counts_data_fem$Centre
+cov2 <- counts_data_fem$Plate.ID
+cov3 <- counts_data_fem$Age
+covs <- data.frame(cov1, cov2, cov3)
+
+infRepIdx <- grep("infRep",assayNames(counts_data_fem),value=TRUE)
+nreps <- length(infRepIdx)
+
+mm <- model.matrix(~Disorder, colData(counts_data_fem))
+pc <- 0.1 #pseudo-count
+for (k in seq_len(nreps)) {
+  logInfRep <- log(assay(counts_data_fem, infRepIdx[k]) + pc)
+  logInfRep <- limma::removeBatchEffect(
+                        logInfRep,
+                        batch = covs$cov1,
+                        batch2 = covs$cov2,
+                        covariates=covs$cov3,
+                        design=mm)
+  assay(counts_data_fem, infRepIdx[k]) <- exp(logInfRep)
+}
+```
+
+dte
+```{r}
+set.seed(131)
+dte_res <- swish(counts_data, x="Disorder")
+table(mcols(dte_res)$qvalue < .05)
+
+set.seed(132)
+dte_res_male <- swish(counts_data_male, x="Disorder")
+table(mcols(dte_res_male)$qvalue < .05)
+
+set.seed(133)
+dte_res_fem <- swish(counts_data_fem, x="Disorder")
+table(mcols(dte_res_fem)$qvalue < .05)
+
+
+biodep_dte_ncc_pooled <- rowRanges(dte_res) %>% as.data.frame()
+biodep_dte_ncc_male <- rowRanges(dte_res_male) %>% as.data.frame()
+biodep_dte_ncc_fem <- rowRanges(dte_res_fem) %>% as.data.frame()
+```
+
+
+-----------------------
+Cell-corrected analysis
+-----------------------
+
+Create required metadata file for swish
+
+```{r}
+colnames(imputed_metadata)[21] <- "Disorder"
+metadata <- imputed_metadata %>% mutate(names = paste(sample_id_match, "_R1.fastq.trimmed.fastq.salmon", sep = "")) %>% dplyr::select(names, sample_id_match, Centre, Plate.ID, Age, Disorder, Sex, macs_b_of_total:macs_mono_class_of_total,  macs_mono_cd16hi_of_total, macs_nk_of_total)
+metadata[,c(3,4)] <- lapply(metadata[,c(3,4)], factor)
+str(metadata)
+
+metadata_male <- imputed_metadata %>% mutate(names = paste(sample_id_match, "_R1.fastq.trimmed.fastq.salmon", sep = "")) %>% filter(Sex == "Male") %>% dplyr::select(names, sample_id_match, Centre, Plate.ID, Age, Disorder, macs_b_of_total:macs_mono_class_of_total,  macs_mono_cd16hi_of_total, macs_nk_of_total)
+metadata_male[,c(3,4)] <- lapply(metadata_male[,c(3,4)], factor)
+str(metadata_male)
+
+metadata_fem <- imputed_metadata %>% mutate(names = paste(sample_id_match, "_R1.fastq.trimmed.fastq.salmon", sep = "")) %>% filter(Sex == "Female") %>% dplyr::select(names, sample_id_match, Centre, Plate.ID, Age, Disorder, macs_b_of_total:macs_mono_class_of_total,  macs_mono_cd16hi_of_total, macs_nk_of_total)
+metadata_fem[,c(3,4)] <- lapply(metadata_fem[,c(3,4)], factor)
+str(metadata_fem)
+```
+
+```{r}
+setwd("~")
+metadata$files <- file.path("E:/BIODEP/salmon/results/", metadata$names, "quant.sf")
+metadata_male$files <- file.path("E:/BIODEP/salmon/results/", metadata_male$names, "quant.sf")
+metadata_fem$files <- file.path("E:/BIODEP/salmon/results/", metadata_fem$names, "quant.sf")
+
+all(file.exists(metadata$files))
+all(file.exists(metadata_male$files))
+all(file.exists(metadata_fem$files))
+```
+
+```{r}
+setwd("~")
+counts_data <- tximeta(metadata)
+counts_data_male <- tximeta(metadata_male)
+counts_data_fem <- tximeta(metadata_fem)
+```
+
+pre-analysis prep
+```{r}
+counts_data <- scaleInfReps(counts_data)
+counts_data <- labelKeep(counts_data, x = "Disorder")
+counts_data <- counts_data[mcols(counts_data)$keep,]
+
+counts_data_male <- scaleInfReps(counts_data_male)
+counts_data_male <- labelKeep(counts_data_male, x = "Disorder")
+counts_data_male <- counts_data_male[mcols(counts_data_male)$keep,]
+
+counts_data_fem <- scaleInfReps(counts_data_fem)
+counts_data_fem <- labelKeep(counts_data_fem, x = "Disorder")
+counts_data_fem <- counts_data_fem[mcols(counts_data_fem)$keep,]
+```
+
+removing batch effect
+```{r}
+#pooled
+covariates <- data.frame(counts_data$Centre, counts_data$Plate.ID, counts_data$Sex, counts_data$Age, counts_data$macs_b_of_total, counts_data$macs_cd4_of_total, counts_data$macs_cd8_of_total, counts_data$macs_mono_class_of_total, counts_data$macs_mono_cd16hi_of_total, counts_data$macs_nk_of_total) %>% setNames(c("Centre", "Plate.ID", "Sex", "Age", "macs_b_of_total", "macs_cd4_of_total", "macs_cd8_of_total", "macs_mono_class_of_total", "macs_mono_cd16hi_of_total", "macs_nk_of_total"))
+
+contrasts(covariates$Centre) <- contr.sum(levels(covariates$Centre))
+contrasts(covariates$Plate.ID) <- contr.sum(levels(covariates$Plate.ID))
+contrasts(covariates$Sex) <- contr.sum(levels(covariates$Sex))
+covariates <- model.matrix(~Centre+Plate.ID+Sex+Age+macs_b_of_total+macs_cd4_of_total+macs_cd8_of_total+macs_mono_class_of_total+macs_mono_cd16hi_of_total+macs_nk_of_total, data = covariates)
+covariates <- covariates[,-1]
+
+infRepIdx <- grep("infRep",assayNames(counts_data),value=TRUE)
+nreps <- length(infRepIdx)
+
+mm <- model.matrix(~Disorder, colData(counts_data))
+pc <- 0.1 #pseudo-count
+for (k in seq_len(nreps)) {
+  logInfRep <- log(assay(counts_data, infRepIdx[k]) + pc)
+  logInfRep <- limma::removeBatchEffect(
+                        logInfRep,
+                        covariates=covariates,
+                        design=mm)
+  assay(counts_data, infRepIdx[k]) <- exp(logInfRep)
+}
+
+#male
+covs <- data.frame(counts_data_male$Centre, counts_data_male$Plate.ID, counts_data_male$Age, counts_data_male$macs_b_of_total, counts_data_male$macs_cd4_of_total, counts_data_male$macs_cd8_of_total, counts_data_male$macs_mono_class_of_total, counts_data_male$macs_mono_cd16hi_of_total, counts_data_male$macs_nk_of_total) %>% setNames(c("Centre", "Plate.ID", "Age", "macs_b_of_total", "macs_cd4_of_total", "macs_cd8_of_total", "macs_mono_class_of_total", "macs_mono_cd16hi_of_total", "macs_nk_of_total"))
+
+infRepIdx <- grep("infRep",assayNames(counts_data_male),value=TRUE)
+nreps <- length(infRepIdx)
+
+mm <- model.matrix(~Disorder, colData(counts_data_male))
+pc <- 0.1 #pseudo-count
+for (k in seq_len(nreps)) {
+  logInfRep <- log(assay(counts_data_male, infRepIdx[k]) + pc)
+  logInfRep <- limma::removeBatchEffect(
+                        logInfRep,
+                        batch = covs$Centre,
+                        batch2 = covs$Plate.ID,
+                        covariates=covs[,c(3:9)],
+                        design=mm)
+  assay(counts_data_male, infRepIdx[k]) <- exp(logInfRep)
+}
+
+#female
+covs <- data.frame(counts_data_fem$Centre, counts_data_fem$Plate.ID, counts_data_fem$Age, counts_data_fem$macs_b_of_total, counts_data_fem$macs_cd4_of_total, counts_data_fem$macs_cd8_of_total, counts_data_fem$macs_mono_class_of_total, counts_data_fem$macs_mono_cd16hi_of_total, counts_data_fem$macs_nk_of_total) %>% setNames(c("Centre", "Plate.ID", "Age", "macs_b_of_total", "macs_cd4_of_total", "macs_cd8_of_total", "macs_mono_class_of_total", "macs_mono_cd16hi_of_total", "macs_nk_of_total"))
+
+infRepIdx <- grep("infRep",assayNames(counts_data_fem),value=TRUE)
+nreps <- length(infRepIdx)
+mm <- model.matrix(~Disorder, colData(counts_data_fem))
+pc <- 0.1 #pseudo-count
+for (k in seq_len(nreps)) {
+  logInfRep <- log(assay(counts_data_fem, infRepIdx[k]) + pc)
+  logInfRep <- limma::removeBatchEffect(
+                        logInfRep,
+                        batch = covs$Centre,
+                        batch2 = covs$Plate.ID,
+                        covariates=covs[,c(3:9)],
+                        design=mm)
+  assay(counts_data_fem, infRepIdx[k]) <- exp(logInfRep)
+}
+```
+
+dte
+```{r}
+set.seed(231)
+dte_res_cc <- swish(counts_data, x="Disorder")
+table(mcols(dte_res_cc)$qvalue < .05)
+
+set.seed(232)
+dte_res_male_cc <- swish(counts_data_male, x="Disorder")
+table(mcols(dte_res_male_cc)$qvalue < .05)
+
+set.seed(233)
+dte_res_fem_cc <- swish(counts_data_fem, x="Disorder")
+table(mcols(dte_res_fem_cc)$qvalue < .05)
+
+biodep_dte_cc_pooled <- rowRanges(dte_res_cc) %>% as.data.frame()
+biodep_dte_cc_male <- rowRanges(dte_res_male_cc) %>% as.data.frame()
+biodep_dte_cc_fem <- rowRanges(dte_res_fem_cc) %>% as.data.frame()
+```

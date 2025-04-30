@@ -1,0 +1,237 @@
+---
+title: "GSEA analyses"
+output: html_notebook
+---
+
+Loading libraries
+
+```{r}
+library(dplyr)
+library(tibble)
+library(tidyr)
+library(stringr)
+library(ggplot2)
+library(reshape2)
+library(ReactomePA)
+library(clusterProfiler)
+library(ggpattern)
+library(ggpubr)
+library(msigdbr)
+```
+
+
+Databases used:
+1)Reactome
+2)MSigDB - ImmuneSigDB
+
+
+Create reference datasets from the three databases
+
+```{r}
+#Reactome
+rtome <- read.gmt("ReactomePathways.gmt")
+
+#msigDB
+gs_hallmark_c7 <- msigdbr(species = "Homo sapiens", category = "C7", subcategory="IMMUNESIGDB")
+msigdb_c7 = gs_hallmark_c7 %>% dplyr::select(gs_name, gene_symbol)
+
+```
+
+Function to run GSEA analysis
+
+```{r}
+gsea_run <- function(data, transcript = F, dtu = F, database = "reactome"){
+  temp = get(data)
+  if(transcript == T){
+    if(dtu == T){
+      print("running DTU")
+          temp <- temp %>% rownames_to_column("featureID") %>%
+            merge(., dtu_info, all.x = T, by = "featureID") %>%
+            mutate(dir = sign(BacWeightedZ_meta), 
+                   signed_pval = (-log10(as.numeric(pvalue.pval_BacWeightedZ))*dir)) %>%
+            dplyr::arrange(desc(signed_pval))
+          temp <- temp[!duplicated(temp$external_gene_name),]
+          gsea <- temp$signed_pval %>% as.vector()
+          names(gsea) <- temp$external_gene_name
+          gsea <- sort(gsea, decreasing = T)
+          } else {
+            print("running DTE")
+            temp <- temp %>% rownames_to_column("tx_id") %>%
+            merge(., tsc_info, all.x = T, by = "tx_id") %>%
+            mutate(dir = sign(BacWeightedZ_meta), 
+                   signed_pval = (-log10(as.numeric(pvalue.pval_BacWeightedZ))*dir)) %>%
+              dplyr::arrange(desc(signed_pval))
+            temp <- temp[!duplicated(temp$external_gene_name),]
+            gsea <- temp$signed_pval %>% as.vector()
+            names(gsea) <- temp$external_gene_name
+            gsea <- sort(gsea, decreasing = T)
+    }
+    } else {
+      print("running DGE")
+      temp <- temp %>% rownames_to_column("gene_name") %>%
+        mutate(dir = sign(BacWeightedZ_meta),
+               signed_pval = (-log10(as.numeric(pvalue.pval_BacWeightedZ))*dir))
+            gsea <- temp$signed_pval %>% as.vector()
+            names(gsea) <- temp$gene_name
+            gsea <- sort(gsea, decreasing = T)
+    }
+  if(database == "reactome"){
+    rtome_run <- GSEA(gsea, TERM2GENE = rtome, exponent = 1, nPerm = 10000, pvalueCutoff = 1)
+  } else if(database == "msigdb"){
+    rtome_run <- GSEA(gsea, TERM2GENE = msigdb_c7, exponent = 1, nPerm = 10000, pvalueCutoff = 1)
+  }else {
+    print("choose one of reactome or msigdb as database name")
+    stop()
+  }
+  return(rtome_run)
+}
+
+```
+
+Run GSEA analysis
+```{r}
+#reactome
+#DGE
+file_names <- ls(pattern = "bacon_meta_dge")
+for(i in file_names){
+  rtome_done <- gsea_run(i, transcript = F, dtu = F) %>% as.data.frame()
+  outname <- i %>% str_replace(., pattern = "bacon_meta", replacement = "rtome")
+  assign(x = outname, value = rtome_done, envir = .GlobalEnv)
+}
+#DTE
+file_names <- ls(pattern = "bacon_meta_dte")
+for(i in file_names){
+  rtome_done <- gsea_run(i, transcript = T, dtu = F) %>% as.data.frame()
+  outname <- i %>% str_replace(., pattern = "bacon_meta", replacement = "rtome")
+  assign(x = outname, value = rtome_done, envir = .GlobalEnv)
+}
+
+#change database and replacement parameter for MSigDB
+```
+
+GSEA plot
+
+```{r}
+#for pooled plots
+gsea_plot <- function(data){
+  temp <- get(data)
+  temp <- temp %>% mutate(net_dir = if_else(NES >=0, "up", "down"))
+  top <- temp %>% filter(p.adjust < 0.05) %>% filter(net_dir == "up") %>% dplyr::arrange(-NES) %>% slice_head(n = 5)
+  bottom <- temp %>% filter(p.adjust < 0.05) %>% filter(net_dir == "down") %>% arrange(NES) %>% slice_head(n = 5)
+  
+  plot_data <- rbind(top, bottom) %>% arrange(-abs(NES)) %>% mutate(id = str_wrap(ID, 30))
+
+plot_data %>% ggplot(aes(x = NES, y = reorder(id,NES))) + geom_bar(stat = "identity", colour = "grey60", fill = "grey25") + theme_classic(base_size = 14) + labs(x = "NES", y = "", title = data) + scale_x_continuous(n.breaks = 5, limits = c(-3,3), breaks = seq(-3,3,1))
+}
+```
+
+Example run: reactome database pooled results
+```{r}
+pdf("reactome_gsea_dge_dte_pooled.pdf", width = 8, height = 7)
+file_names = ls(pattern = "rtome_")
+file_names <- file_names[c(1,2,9,10)]#select for pooled DGE and DTE results
+for(i in file_names){
+  plot_temp <- gsea_plot(i)
+  print(plot_temp)
+}
+dev.off()
+
+```
+
+
+Combined male and female plot template
+Example run:DGE male and female results for Reactome database 
+```{r}
+pdf("reactome_gsea_dge_male_female.pdf", width = 8, height = 7)
+
+r_dge_m <- rtome_dge_male
+r_dge_f <- rtome_dge_female
+r_uni_dge_m <- rtome_any_dge_male
+r_uni_dge_f <- rtome_any_dge_female
+
+
+comm_id <- rbind(r_dge_m, r_dge_f) %>% dplyr::select(ID) %>% unique()
+r_dge <- comm_id %>% merge(., r_dge_m, by = "ID", all.x = T) %>% dplyr::select(ID, NES, p.adjust) %>% setNames(c("ID", "NES_m", "padj_m")) %>% merge(., r_dge_f, by = "ID", all.x = T) %>% dplyr::select(ID:padj_m, NES, p.adjust) %>% setNames(c("ID", "NES_m", "padj_m", "NES_f", "padj_f")) %>% mutate(male_present = if_else(is.na(NES_m) == T, "No", "Yes"), female_present = if_else(is.na(NES_f) == T, "No", "Yes"))
+top_5_m <- r_dge %>% filter(padj_m < 0.05) %>% arrange(-NES_m) %>% slice_head(n = 5)
+bott_5_m <- r_dge %>% filter(padj_m < 0.05) %>% arrange(NES_m) %>% slice_head(n = 5)
+top_5_f <- r_dge %>% filter(padj_f < 0.05) %>% arrange(-NES_f) %>% slice_head(n = 5)
+bott_5_f <- r_dge %>% filter(padj_f < 0.05) %>% arrange(NES_f) %>% slice_head(n = 5)
+
+plot_data <- rbind(top_5_m, bott_5_m) %>% dplyr::select(-c(male_present, female_present)) %>% arrange(NES_m) %>% mutate(rank = row_number()) %>% melt(., id.vars = c("ID", "padj_m", "padj_f", "rank")) %>% separate(variable, into = c("var", "sex"), sep = "_")
+colnames(plot_data)[7] <- "NES"
+plot_data <- plot_data %>% mutate(padj = if_else(sex == "m", padj_m, padj_f), colour_sig = if_else(padj < 0.05, "ok", "grey"))
+
+plot_data %>% mutate(names = str_wrap(ID, 30)) %>% ggplot(aes(x = NES, y = reorder(names,rank), fill = reorder(sex, rank))) + geom_bar_pattern(stat = "identity", colour = "grey60", position = position_dodge2(), aes(pattern = colour_sig)) + theme_classic(base_size = 14) + labs(x = "NES", y = "", title = "Male with Female GSEA plot") + scale_fill_manual(values = c("cadetblue3", "dodgerblue4"), name = "") + scale_pattern_manual(values = c("stripe", "none")) + scale_x_continuous(n.breaks = 5, limits = c(-3,3), breaks = seq(-3,3,1))
+
+
+plot_data <- rbind(top_5_f, bott_5_f) %>% dplyr::select(-c(male_present, female_present)) %>% arrange(NES_f) %>% mutate(rank = row_number()) %>% melt(., id.vars = c("ID", "padj_m", "padj_f", "rank")) %>% separate(variable, into = c("var", "sex"), sep = "_")
+colnames(plot_data)[7] <- "NES"
+plot_data <- plot_data %>% mutate(padj = if_else(sex == "m", padj_m, padj_f), colour_sig = if_else(padj < 0.05, "ok", "grey"))
+
+plot_data <- plot_data %>% arrange(rank, sex) %>% mutate(rank_2 = row_number())
+
+plot_data %>% mutate(names = str_wrap(ID, 30)) %>% ggplot(aes(x = NES, y = reorder(names,rank), fill = sex)) + geom_bar_pattern(stat = "identity", colour = "grey60", position = position_dodge2(), aes(pattern = reorder(colour_sig, rank_2))) + theme_classic(base_size = 14) + labs(x = "NES", y = "", title = "Female with Male GSEA plot") + scale_fill_manual(values = c("cadetblue3", "dodgerblue4"), name = "") + scale_pattern_manual(values = c("none", "stripe"), name = "") + scale_x_continuous(n.breaks = 5, limits = c(-3,3), breaks = seq(-3,3,1))
+
+dev.off()
+
+```
+
+
+show directon of all dataset on pooled plot: pooled, male, female and BMI (sensitivity)
+Example run: DGE with reactome database
+
+```{r}
+temp <- rtome_dge_pooled
+
+temp <- temp %>% mutate(net_dir = if_else(NES >=0, "up", "down"))
+top <- temp %>% filter(p.adjust < 0.05) %>% filter(net_dir == "up") %>% dplyr::arrange(-NES) %>% slice_head(n = 5)
+bottom <- temp %>% filter(p.adjust < 0.05) %>% filter(net_dir == "down") %>% arrange(NES) %>% slice_head(n = 5)
+  
+plot_data <- rbind(top, bottom) %>% arrange(-abs(NES)) %>% mutate(id = case_when(ID == "Diseases of signal transduction by growth factor receptors and second messengers" ~ "Diseases of signal transduction by GFRs and second messengers", ID == "Respiratory electron transport, ATP synthesis by chemiosmotic coupling, and heat production by uncoupling proteins." ~ "Respiratory electron transport, ATP synthesis by chemiosmotic coupling...", ID == "Nonsense Mediated Decay (NMD) independent of the Exon Junction Complex (EJC)" ~ "NMD independent of the Exon Junction Complex (EJC)", TRUE ~ ID)) %>% mutate(id = str_wrap(id, 30), samp_frac = 1)
+
+to_retain <- plot_data
+
+temp <- rtome_dge_pooled %>% filter(ID %in% to_retain$ID)
+temp1 <- rtome_dge_female %>% filter(ID %in% to_retain$ID)
+temp2 <- rtome_dge_male %>% filter(ID %in% to_retain$ID)
+temp3 <- rtome_sens_dge_pooled %>% filter(ID %in% to_retain$ID)
+
+temp_all <- rbind(temp, temp1, temp2, temp3) %>% mutate(group_name = rep(c("pooled", "female", "male", "BMI"), times = c(nrow(temp), nrow(temp1), nrow(temp2), nrow(temp3)))) %>% mutate(id = str_wrap(ID, 30), samp_frac = 1)
+
+temp_all <- temp_all %>% mutate(colour_sig = if_else(p.adjust < 0.05, TRUE, FALSE)) %>%
+  dplyr::select(id, NES, group_name, samp_frac, colour_sig, p.adjust)
+
+col_names <- RColorBrewer::brewer.pal(5, name = "Blues")
+
+temp_all <- temp_all %>% mutate(colour_sig = if_else(p.adjust < 0.05, "ok", "grey")) %>%
+  dplyr::select(id, NES, group_name, samp_frac, colour_sig, p.adjust)
+
+col_names <- RColorBrewer::brewer.pal(5, name = "Blues")
+
+temp_all <- temp_all %>% mutate(NES_pooled = if_else(group_name == "pooled", NES, 0)) 
+
+temp_all %>% mutate(names = str_wrap(id, 30, whitespace_only = T)) %>% ggplot(aes(x = NES, y = reorder(names,NES_pooled), fill = factor(group_name, levels = c("BMI", "female", "male", "pooled")), pattern = colour_sig)) + geom_bar_pattern(stat = "identity", colour = "grey60", position = position_dodge2(preserve = "single")) + theme_classic(base_size = 14) + labs(x = "NES", y = "", title = "Combined plots") + scale_fill_manual(values = c(col_names[2], "cadetblue3", "dodgerblue4", "grey25"), name = "", guide = guide_legend(reverse = T)) + scale_pattern_manual(values = c("stripe", "none"), name = "") + scale_x_continuous(n.breaks = 5, limits = c(-3,3), breaks = seq(-3,3,1))
+
+ggsave("reactome_gsea_all.pdf", width = 8, height = 8)
+```
+
+
+------------------
+Leading edge plots
+------------------
+
+```{r}
+source("gsea_leading_edge.R")
+```
+
+
+Example run: pathway from male DGE results
+```{r}
+all_pathways =  c("Selenocysteine synthesis", "Selenoamino acid metabolism")
+ymins = c(-0.25, -0.25)
+ymaxs = c(-0.05, -0.05)
+for(i in seq(1,2,1)){
+ledge_plot(gseaout = rtome_any_limma_male, pathway = all_pathways[i], ymin = as.numeric(ymins[i]), ymax = as.numeric(ymaxs[i]), xmax = 20000, plot = T, sample_extension = "bacon_meta_any_dge_male")
+}
+```
+

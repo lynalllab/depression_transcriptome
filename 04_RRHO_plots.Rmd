@@ -1,0 +1,148 @@
+---
+title: "RRHO plots"
+output: html_notebook
+---
+
+Loading libraries
+
+```{r}
+library(dplyr)
+library(tibble)
+library(tidyr)
+library(stringr)
+library(ggplot2)
+library(reshape2)
+library(ReactomePA)
+library(clusterProfiler)
+library(ggpattern)
+library(ggpubr)
+library(openxlsx)
+library(msigdbr)
+library(RRHO2)
+```
+
+
+1) meta-analysed male vs meta-analysed female
+
+```{r}
+gene_list_1 <- bacon_meta_dge_male %>% rownames_to_column("gene_name") %>% 
+  mutate(dir = sign(BacWeightedZ_meta), 
+         signed_pval = (-log10(as.numeric(pvalue.pval_BacWeightedZ))*dir)) %>%
+  dplyr::select(gene_name, signed_pval) %>% setNames(c("gene_symbol", "input_score"))
+
+gene_list_2 <- bacon_meta_dge_female %>% rownames_to_column("gene_name") %>% 
+  mutate(dir = sign(BacWeightedZ_meta), 
+         signed_pval = (-log10(as.numeric(pvalue.pval_BacWeightedZ))*dir)) %>%
+  dplyr::select(gene_name, signed_pval) %>% setNames(c("gene_symbol", "input_score"))
+
+#check same gene names present in both
+length(intersect(gene_list_1$gene_symbol, gene_list_2$gene_symbol)) == nrow(gene_list_1)
+length(intersect(gene_list_1$gene_symbol, gene_list_2$gene_symbol)) == nrow(gene_list_2)
+
+#conduct RRHO analysis
+RRHO_male_female <- RRHO2_initialize(gene_list_1, gene_list_2, labels = c("Meta-analysed Male", "Meta-analysed Female"), log10.ind=TRUE)
+
+pdf("RRHO2_heatmap_meta_analysed_female_vs_male.pdf")
+RRHO2_heatmap(RRHO_male_female)
+dev.off()
+```
+
+
+
+2) TWAS vs meta-analysed
+
+```{r}
+twas_genes <- read.table("Whole_Blood_GTExv8_mdd_twas_TA_combined_2404.txt", sep = "\t", header = T, stringsAsFactors = F)
+
+twas_genes <- twas_genes %>% separate(ID, into = c("ensembl_gene_id", NA), sep = "\\.") %>% merge(., gene_info, by = "ensembl_gene_id")
+```
+
+
+a) pooled 
+
+```{r}
+gene_list_1 <- twas_genes %>% 
+  mutate(dir = sign(TWAS.Z), signed_pval = -log10(TWAS.P)*dir) %>%
+  dplyr::select(external_gene_name, signed_pval) %>% setNames(c("gene_symbol", "input_score")) %>%
+  filter(is.na(input_score) == F)
+
+
+gene_list_2 <- bacon_meta_dge_pooled %>% rownames_to_column("gene_name") %>% 
+  filter(gene_name %in% gene_list_1$gene_symbol) %>%
+  mutate(dir = sign(BacWeightedZ_meta), 
+         signed_pval = (-log10(as.numeric(pvalue.pval_BacWeightedZ))*dir)) %>%
+  dplyr::select(gene_name, signed_pval) %>% setNames(c("gene_symbol", "input_score"))
+
+gene_list_1 <- gene_list_1 %>% filter(gene_symbol %in% gene_list_2$gene_symbol)
+
+#check same gene names present in both
+length(intersect(gene_list_1$gene_symbol, gene_list_2$gene_symbol)) == nrow(gene_list_1)
+length(intersect(gene_list_1$gene_symbol, gene_list_2$gene_symbol)) == nrow(gene_list_2)
+
+#conduct RRHO analysis
+RRHO_twas_pooled <- RRHO2_initialize(gene_list_1, gene_list_2, labels = c("TWAS genes", "Meta-analysed pooled"), log10.ind=TRUE)
+
+pdf("RRHO2_heatmap_twas_vs_meta_analysed_pooled.pdf")
+RRHO2_heatmap(RRHO_twas_pooled)
+dev.off()
+```
+
+b) male 
+
+```{r}
+gene_list_1 <- twas_genes %>% 
+  mutate(dir = sign(TWAS.Z), signed_pval = -log10(TWAS.P)*dir) %>%
+  dplyr::select(external_gene_name, signed_pval) %>% setNames(c("gene_symbol", "input_score")) %>%
+  filter(is.na(input_score) == F)
+
+
+gene_list_2 <- bacon_meta_dge_male %>% rownames_to_column("gene_name") %>% 
+  filter(gene_name %in% gene_list_1$gene_symbol) %>%
+  mutate(dir = sign(BacWeightedZ_meta), 
+         signed_pval = (-log10(as.numeric(pvalue.pval_BacWeightedZ))*dir)) %>%
+  dplyr::select(gene_name, signed_pval) %>% setNames(c("gene_symbol", "input_score"))
+
+gene_list_1 <- gene_list_1 %>% filter(gene_symbol %in% gene_list_2$gene_symbol)
+
+#check same gene names present in both
+length(intersect(gene_list_1$gene_symbol, gene_list_2$gene_symbol)) == nrow(gene_list_1)
+length(intersect(gene_list_1$gene_symbol, gene_list_2$gene_symbol)) == nrow(gene_list_2)
+
+#conduct RRHO analysis
+RRHO_twas_male <- RRHO2_initialize(gene_list_1, gene_list_2, labels = c("TWAS genes", "Meta-analysed male"), log10.ind=TRUE)
+
+pdf("RRHO2_heatmap_twas_vs_meta_analysed_male.pdf")
+RRHO2_heatmap(RRHO_twas_male)
+dev.off()
+```
+
+c) female
+
+```{r}
+gene_list_1 <- twas_genes %>% 
+  mutate(dir = sign(TWAS.Z), signed_pval = -log10(TWAS.P)*dir) %>%
+  dplyr::select(external_gene_name, signed_pval) %>% setNames(c("gene_symbol", "input_score")) %>%
+  filter(is.na(input_score) == F)
+
+
+gene_list_2 <- bacon_meta_dge_female %>% rownames_to_column("gene_name") %>% 
+  filter(gene_name %in% gene_list_1$gene_symbol) %>%
+  mutate(dir = sign(BacWeightedZ_meta), 
+         signed_pval = (-log10(as.numeric(pvalue.pval_BacWeightedZ))*dir)) %>%
+  dplyr::select(gene_name, signed_pval) %>% setNames(c("gene_symbol", "input_score"))
+
+gene_list_1 <- gene_list_1 %>% filter(gene_symbol %in% gene_list_2$gene_symbol)
+
+#check same gene names present in both
+length(intersect(gene_list_1$gene_symbol, gene_list_2$gene_symbol)) == nrow(gene_list_1)
+length(intersect(gene_list_1$gene_symbol, gene_list_2$gene_symbol)) == nrow(gene_list_2)
+
+#conduct RRHO analysis
+RRHO_twas_female <- RRHO2_initialize(gene_list_1, gene_list_2, labels = c("TWAS genes", "Meta-analysed female"), log10.ind=TRUE)
+
+pdf("RRHO2_heatmap_twas_vs_meta_analysed_female.pdf")
+RRHO2_heatmap(RRHO_twas_female)
+dev.off()
+```
+
+

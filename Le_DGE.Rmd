@@ -1,0 +1,275 @@
+---
+title: "Le DGE"
+output: html_notebook
+---
+
+Loading required libraries
+
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(reshape2)
+library(tibble)
+library(edgeR)
+library(xCell)
+library(VennDiagram)
+library(ensembldb)
+library(EnsDb.Hsapiens.v86)
+```
+
+-------------------
+Not cell-corrected
+-------------------
+
+Create design matrix for DGE analysis
+
+```{r}
+design_pooled <- model.matrix(~ Disorder + batch + age + sex, data = final_metadata)
+
+design_female <- model.matrix(~ Disorder + batch + age, data = final_metadata_female)
+
+design_male <- model.matrix(~ Disorder + batch + age, data = final_metadata_male)
+```
+
+Conduct DGE analysis using limma-voom
+
+```{r}
+voom_pooled <- voomWithQualityWeights(data_filtered, design = design_pooled, plot = T) 
+voom_fit <- lmFit(voom_pooled, design = design_pooled)
+voom_fit <- eBayes(voom_fit)
+le_tt_ncc_pooled <- topTable(voom_fit, coef = "DisorderMDD", number = nrow(data_filtered))
+results <- decideTests(voom_fit)
+summary(results)
+
+
+voom_m <- voomWithQualityWeights(data_filtered_male, design = design_male, plot = T)
+voom_fit_m <- lmFit(voom_m, design = design_male)
+voom_fit_m <- eBayes(voom_fit_m)
+le_tt_ncc_m <- topTable(voom_fit_m, coef = "DisorderMDD", number = nrow(data_filtered_male))
+results_m <- decideTests(voom_fit_m)
+summary(results_m)
+
+
+voom_f <- voomWithQualityWeights(data_filtered_female, design = design_female, plot = T)
+voom_fit_f <- lmFit(voom_f, design = design_female)
+voom_fit_f <- eBayes(voom_fit_f)
+le_tt_ncc_f <- topTable(voom_fit_f, coef = "DisorderMDD", number = nrow(data_filtered_female))
+results_f <- decideTests(voom_fit_f)
+summary(results_f)
+
+```
+
+-----------------------
+Cell-corrected analysis
+-----------------------
+
+Calculate cell proportions using xCell
+
+```{r}
+pooled_counts <- data_filtered[['counts']] %>% as.data.frame()
+```
+
+Check overlap of at least 5000 gene names (recommended) between xCell database and input
+
+```{r}
+xcell_genes <- xCell.data$genes %>% as.data.frame() %>% setNames("gene_name")
+pooled_genes <- rownames(pooled_counts) %>% as.data.frame() %>% setNames("ensembl_gene_id") %>% merge(., gene_info, by = "ensembl_gene_id", all.x = T)
+
+venn.diagram(list(Pooled = pooled_genes$external_gene_name, xCell = xcell_genes$gene_name), filename = "overlap_genes_with_xCell.tiff")
+```
+
+xCell requires TPM values - loading gene length information to be able to calculate TPM downstream.
+
+```{r}
+edb <- EnsDb.Hsapiens.v86
+gene_lengths <- lengthOf(edb, of = "gene")
+gene_lengths <- as.data.frame(gene_lengths) %>% rownames_to_column("ensembl_gene_id")
+
+gene_len_pooled <- pooled_genes %>% merge(., gene_lengths, by = "ensembl_gene_id", all.x = T) %>% dplyr::filter(is.na(gene_lengths) == F)
+
+gene_len_pooled_2 <- gene_len_pooled %>% dplyr::select(ensembl_gene_id, external_gene_name, gene_lengths) %>% arrange(desc(gene_lengths)) %>% distinct(external_gene_name, .keep_all = T)
+
+rm(edb, gene_len_pooled)
+
+detach(package:EnsDb.Hsapiens.v86)
+detach(package:ensembldb)
+```
+
+subset of genes with gene length information
+```{r}
+counts_samples_sub <- pooled_counts %>% filter(rownames(.) %in% gene_len_pooled_2$ensembl_gene_id)
+rowname <- rownames(counts_samples_sub) %>% as.data.frame() %>% setNames("ensembl_gene_id") %>% merge(., gene_len_pooled_2, by = "ensembl_gene_id", all.x = T, sort = F) %>% dplyr::select(external_gene_name)
+rownames(counts_samples_sub) <- as.character(rowname$external_gene_name)
+
+data_filtered_sub <- DGEList(counts = counts_samples_sub, group = final_metadata$Disorder)
+data_filtered_sub <- calcNormFactors(data_filtered_sub)
+```
+
+Calculate RPKM
+
+```{r}
+gl_pooled <- rownames(counts_samples_sub) %>% as.data.frame() %>% setNames("external_gene_name") %>% merge(., gene_len_pooled_2, sort = F, by = "external_gene_name") %>% column_to_rownames("external_gene_name")
+
+RPKM_pooled <- rpkm(data_filtered_sub, gene.length = gl_pooled$gene_lengths)
+```
+
+Calculate TPM calculate (TMM normalised - at RPKM stage)
+
+```{r}
+TPM_pooled <- t( t(RPKM_pooled) / colSums(RPKM_pooled) ) * 1e6
+```
+
+xCell calculation
+
+```{r}
+cellchoice_broad <- c("B-cells", "CD4+ T-cells", "CD8+ T-cells", "Monocytes", "NK cells") 
+
+set.seed(13005)
+xcellout_broad_pooled <- xCellAnalysis(expr=TPM_pooled, genes=rownames(TPM_pooled),
+                                       rnaseq=TRUE, cell.types.use=cellchoice_broad)
+```
+
+### xCell stats
+code credit M-E Lynall
+
+#significance
+```{r}
+set.seed(13005)
+# Significance testing for whether cell types are likely present in the mixture
+tmp <- xCellSignifcanceBetaDist(xcellout_broad_pooled, rnaseq=TRUE)
+# Only keep a cell type if there is evidence (p<0.05) for presence of the cell type in at least 30% samples (arbitrary)
+toselect <- apply(tmp,1,function(x){sum(x<0.1)}>=26)
+toselect %>% table 
+xcellsmall_broad_pooled <- xcellout_broad_pooled[toselect,]
+ypos_broad_pooled <- apply(xcellsmall_broad_pooled, 1, function(x){1.3*max(x)})
+```
+
+
+```{r}
+xcell_broad_pooled <- melt(xcellsmall_broad_pooled, varnames=c("Celltype","sample"), value.name="proportion")
+xcell_broad_pooled$cond <- final_metadata$Disorder[match(xcell_broad_pooled$sample,final_metadata$sample_id_match)]
+
+anno_df<- compare_means(proportion ~ cond, group.by="Celltype",data=xcell_broad_pooled, 
+                        method="wilcox.test", paired=FALSE, p.adjust.method = "BH") %>%
+ dplyr::mutate(p.adj = format.pval(p.adj, digits = 1), p = format.pval(p, digits = 1))
+anno_df$y.position <- ypos_broad_pooled
+order <- as.character(data.frame(anno_df %>% arrange(p))$Celltype)
+print(anno_df)
+xcell_broad_pooled$Celltype <- factor(as.character(xcell_broad_pooled$Celltype), levels=order, ordered=T)
+
+ggplot(xcell_broad_pooled, aes(x=cond, y=proportion)) + 
+  geom_boxplot(aes(fill=cond),position=position_dodge(), outlier.shape = NA) + theme_bw() + scale_fill_manual(values = c("cadetblue2","cadetblue")) +
+  geom_jitter(color="black", width = 0.2) +
+  facet_wrap(~Celltype, scales = "free_y", ncol = 4) + stat_pvalue_manual(data=anno_df, label="p.signif", vjust=1.2)  + labs(x = "", y = "", fill = "Disorder")# Note that p.signif is unadjusted p values
+ggsave("xcell_prop_pooled_broad.pdf" ,width=9, height=4)
+```
+
+
+```{r}
+cc_broad_pooled <- xcellsmall_broad_pooled %>% t() %>% as.data.frame() %>% rownames_to_column("sample_id_match")
+final_metadata_cc <- merge(final_metadata, cc_broad_pooled, by = "sample_id_match")
+final_metadata_cc$batch <- as.factor(final_metadata_cc$batch)
+final_metadata_cc$sex <- as.factor(final_metadata_cc$sex)
+final_metadata_cc$Disorder <- as.factor(final_metadata_cc$Disorder)
+
+final_metadata_fem_cc <- final_metadata_cc %>% filter(sex == "Female")
+final_metadata_male_cc <- final_metadata_cc %>% filter(sex == "Male")
+```
+
+
+Create design matrix for DGE analysis
+
+```{r}
+design_pooled_cc <- model.matrix(~ Disorder + batch + sex + age +`B-cells` + `CD4+ T-cells` + `CD8+ T-cells` + Monocytes + `NK cells`, data = final_metadata_cc)
+
+design_female_cc <- model.matrix(~ Disorder + batch + age + `B-cells` + `CD4+ T-cells` + `CD8+ T-cells` + Monocytes + `NK cells`, data = final_metadata_fem_cc)
+
+design_male_cc <- model.matrix(~ Disorder + batch + age +`B-cells` + `CD4+ T-cells` + `CD8+ T-cells` + Monocytes + `NK cells`, data = final_metadata_male_cc)
+```
+
+Re-filter and re-normalise count data subset with cell count information
+
+```{r}
+counts_samples_cc <- counts_samples %>% dplyr::select(one_of(dput(as.character(final_metadata_cc$sample_id_match))))
+data_filtered_cc<- DGEList(counts = counts_samples_cc, genes = gene_info,  group = final_metadata_cc$disorder)
+keep <- filterByExpr(data_filtered_cc)
+data_filtered_cc <- data_filtered_cc[keep, , keep.lib.sizes=FALSE]
+data_filtered_cc <- calcNormFactors(data_filtered_cc)
+data_normalised_cc <- cpm(data_filtered_cc, log = T, prior.count = 0.5)
+
+
+counts_samples_female_cc <- counts_samples %>% dplyr::select(one_of(dput(as.character(final_metadata_fem_cc$sample_id_match))))
+data_filtered_female_cc <- DGEList(counts = counts_samples_female_cc, genes = gene_info,  group = final_metadata_fem_cc$disorder)
+keep <- filterByExpr(data_filtered_female_cc)
+data_filtered_female_cc <- data_filtered_female_cc[keep, , keep.lib.sizes=FALSE]
+data_filtered_female_cc <- calcNormFactors(data_filtered_female_cc)
+data_normalised_female_cc <- cpm(data_filtered_female_cc, log = T, prior.count = 0.5)
+
+
+counts_samples_male_cc <- counts_samples %>% dplyr::select(one_of(dput(as.character(final_metadata_male_cc$sample_id_match))))
+data_filtered_male_cc <- DGEList(counts = counts_samples_male_cc, genes = gene_info,  group = final_metadata_male_cc$disorder)
+keep <- filterByExpr(data_filtered_male_cc)
+data_filtered_male_cc <- data_filtered_male_cc[keep, , keep.lib.sizes=FALSE]
+data_filtered_male_cc <- calcNormFactors(data_filtered_male_cc)
+data_normalised_male_cc <- cpm(data_filtered_male_cc, log = T, prior.count = 0.5)
+```
+
+Conduct DGE analysis using limma-voom
+
+```{r}
+voom_pooled_cc <- voomWithQualityWeights(data_filtered_cc, design = design_pooled_cc, plot = T)
+voom_fit_cc <- lmFit(voom_pooled_cc, design = design_pooled_cc)
+voom_fit_cc <- eBayes(voom_fit_cc)
+le_tt_cc_pooled <- topTable(voom_fit_cc, coef = "DisorderMDD", number = nrow(data_filtered_cc))
+results_cc <- decideTests(voom_fit_cc)
+summary(results_cc)
+
+
+voom_m_cc <- voomWithQualityWeights(data_filtered_male_cc, design = design_male_cc, plot = T)
+voom_fit_m_cc <- lmFit(voom_m_cc, design = design_male_cc)
+voom_fit_m_cc <- eBayes(voom_fit_m_cc)
+le_tt_cc_m <- topTable(voom_fit_m_cc, coef = "DisorderMDD", number = nrow(data_filtered_male_cc))
+results_m_cc <- decideTests(voom_fit_m_cc)
+summary(results_m_cc)
+
+
+voom_f_cc <- voomWithQualityWeights(data_filtered_female_cc, design = design_female_cc, plot = T)
+voom_fit_f_cc <- lmFit(voom_f_cc, design = design_female_cc)
+voom_fit_f_cc <- eBayes(voom_fit_f_cc)
+le_tt_cc_f <- topTable(voom_fit_f_cc, coef = "DisorderMDD", number = nrow(data_filtered_female_cc))
+results_f_cc <- decideTests(voom_fit_f_cc)
+summary(results_f_cc)
+
+```
+
+---------------------------------
+Data prep for downstream analysis
+---------------------------------
+
+```{r}
+catgs <- final_metadata_fem_cc %>% dplyr::select(sample_id_match, Disorder, batch, age, `B-cells`:`NK cells`) 
+catgs[, c(2,3)] <- lapply(catgs[, c(2,3)], factor)
+design = model.matrix(~ batch + age + `B-cells` + `CD4+ T-cells` + `CD8+ T-cells` + Monocytes + `NK cells`, data = catgs)
+mm <- model.matrix(~Disorder, data = catgs)
+batch_correct_l_f <- removeBatchEffect(data_normalised_female_cc, covariates = design[,-1], design = mm)
+
+catgs <- final_metadata_male_cc %>% dplyr::select(sample_id_match, Disorder, batch, age, `B-cells`:`NK cells`) 
+catgs[, c(2,3)] <- lapply(catgs[, c(2,3)], factor)
+design = model.matrix(~ batch + age + `B-cells` + `CD4+ T-cells` + `CD8+ T-cells` + Monocytes + `NK cells`, data = catgs)
+mm <- model.matrix(~Disorder, data = catgs)
+batch_correct_l_m <- removeBatchEffect(data_normalised_male_cc, covariates = design[,-1], design = mm)
+
+catgs <- final_metadata_cc %>% dplyr::select(sample_id_match, Disorder, batch, sex, age, `B-cells`:`NK cells`) 
+catgs[, c(2,3)] <- lapply(catgs[, c(2,3)], factor)
+design = model.matrix(~ batch + sex + age + `B-cells` + `CD4+ T-cells` + `CD8+ T-cells` + Monocytes + `NK cells`, data = catgs)
+mm <- model.matrix(~Disorder, data = catgs)
+batch_correct_l_pooled <- removeBatchEffect(data_normalised_cc, covariates = design[,-1], design = mm)
+
+metd_l <- final_metadata_cc
+
+save(metd_l, gsea_det_l_f, gsea_det_l_m, batch_correct_l_f, batch_correct_l_m, file = "../for_WGCNA/le.Rdata")
+```
+
+

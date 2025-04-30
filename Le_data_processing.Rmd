@@ -1,0 +1,158 @@
+---
+title: "Le data processing"
+output: html_notebook
+---
+
+Loading required libraries
+
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(reshape2)
+library(tibble)
+library(edgeR)
+library(biomaRt)
+```
+
+Generate gene counts using same process as BIODEP
+
+
+```{bash}
+#fastqc
+.././fastqc -o ../fastqc_results/ -t 30 *.fastq.gz
+
+#multiqc
+python3 -m multiqc .
+
+#cutadapt
+parallel -j 30 --link 'cutadapt -a AGATCGGAAGAGC -A AGATCGGAAGAGC -q 30 -m 50 -o ../Le_trimmed/{1.}.trimmed.fastq.gz -p ../Le_trimmed/{2.}.trimmed.fastq.gz {1} {2}  > ../Le_trimmed/{1.}_cutadapt_out.txt' ::: *R1_001.fastq.gz ::: *R2_001.fastq.gz
+
+#then re-run fastqc and multiqc on trimmed reads
+```
+
+
+```{bash}
+#run STAR 2.5.2b
+#Run genome index: 
+./STAR --runThreadN 16 --runMode genomeGenerate --genomeDir ../Le/genome_index_38_84_le/ --genomeFastaFiles ../Homo_sapiens.GRCh38.dna.primary_assembly.fa --sjdbGTFfile ../Homo_sapiens.GRCh38.84.gtf --sjdbOverhang 146
+
+#Keep index loaded on memory
+.././STAR --genomeLoad LoadAndExit --genomeDir ../genome_index_38_84_le/
+
+#Run mapping:
+parallel -j 2 --link '.././STAR --runThreadN 15 --genomeLoad LoadAndKeep --genomeDir ../genome_index_38_84_le/ --readFilesIn <(gunzip -c {1}) <(gunzip -c {2}) --outFileNamePrefix ../star_results/{1.}.star --outSAMtype BAM Unsorted --quantMode GeneCounts' ::: *R1_001.fastq.trimmed.fastq.gz ::: *R2_001.fastq.trimmed.fastq.gz
+
+#remove index from memory after run
+.././STAR --genomeLoad Remove --genomeDir ../genome_index_38_84_le/
+
+```
+
+```{bash}
+#run FeatureCount v1.5.1
+
+parallel -j 15 '.././featureCounts -T 2 -p -s 2 -Q 10 -t exon -g gene_id -a ../Homo_sapiens.GRCh38.84.gtf -o ../feature_counts/{1.}.txt {1}' ::: *.starAligned.out.bam
+```
+
+Read featureCount output
+
+```{r}
+setwd("~")
+setwd("E:/Le/feature_counts/")
+
+file_names <- list.files(path = ".", pattern = "starAligned.out.txt$")
+
+gene_matrix <- read.table(file_names[1], header = T, skip = 1, stringsAsFactors = F, sep = "\t")
+
+for(i in 2:length(file_names)){
+  temp_data <- read.table(file_names[i], header = T, skip = 1, stringsAsFactors = F, sep = "\t")
+  temp_data <- temp_data %>% dplyr::select(-c(Chr:Length))
+  gene_matrix <- gene_matrix %>% merge(., temp_data, sort = F, by = "Geneid")
+}
+
+rm(file_names, i, temp_data)
+```
+
+Creating final gene count matrix
+
+```{r}
+gene_count_fin <- gene_matrix %>% dplyr::select(Geneid, AA003_ATTCCT_L006_R1_001.fastq.trimmed.fastq.starAligned.out.bam:AN965_R1_001.fastq.trimmed.fastq.starAligned.out.bam)
+col_names <- colnames(gene_count_fin) %>% as.data.frame() %>% setNames("V1") %>% separate(V1, into = c("Name", NA,NA), sep = "_")
+col_names <- as.character(col_names$Name)
+colnames(gene_count_fin) <- col_names
+
+rm(col_names)
+```
+
+Loading datasets
+
+```{r}
+gene_count_fin <- gene_count_fin %>% column_to_rownames("Geneid")
+counts_samples <- data.frame(apply(gene_count_fin, 2, function(x) as.numeric(as.character(x))))
+rownames(counts_samples) <- rownames(gene_count_fin)
+rm(gene_count_fin)
+```
+
+```{r}
+genes <- rownames(counts_samples) %>% as.data.frame() %>% setNames("gene_name")
+load(file = "../../ensembl_GRCh38_v84.Rdata")
+att <- c("ensembl_gene_id", "external_gene_name", "gene_biotype", "chromosome_name")
+gene_infos <- getBM(mart = ensembl, attributes = att)
+gene_info <- gene_infos %>% filter(ensembl_gene_id %in% genes$gene_name)
+n_distinct(gene_info$ensembl_gene_id)
+
+gene_info <- gene_info %>% filter(chromosome_name %in% c(seq(1,22,1), "MT", "X", "Y"))
+
+counts_samples <- counts_samples %>% filter(rownames(.) %in% gene_info$ensembl_gene_id) 
+
+rm(done_files, filenames, filenames_multi, filenames_single, final_samp_list, gene_infos, gene_matrix, genes, names_done, names_to_be_done, to_do_files, att, after, before, cor_dups, cor_salmon)
+```
+
+Retain metadata for samples with corresponding count data
+
+```{r}
+final_metadata <- read.table("../Demographic_symptom.csv", sep = ",", stringsAsFactors = F, header = T) %>% filter(sample_id_match %in% colnames(counts_samples)) %>% mutate(Disorder = if_else(Diag == "HC", "CNT", "MDD"))
+```
+
+Create male and female subsets
+
+```{r}
+final_metadata_male <- final_metadata %>% filter(Sex =="Male")
+final_metadata_female <- final_metadata %>% filter(Sex == "Female")
+
+
+counts_samples_male <- counts_samples %>% dplyr::select(one_of(dput(as.character(final_metadata_male$sample_id_match))))
+
+counts_samples_female <- counts_samples %>% 
+  dplyr::select( one_of(dput(as.character(final_metadata_female$sample_id_match))))
+```
+
+Filter count data
+
+```{r}
+data_filtered <- DGEList(counts = counts_samples, genes = gene_info,  group = final_metadata$Disorder)
+keep <- filterByExpr(data_filtered)
+data_filtered <- data_filtered[keep, , keep.lib.sizes=FALSE]
+
+data_filtered_male <- DGEList(counts = counts_samples_male, genes = gene_info,  group = final_metadata_male$Disorder)
+keep <- filterByExpr(data_filtered_male)
+data_filtered_male <- data_filtered_male[keep, , keep.lib.sizes=FALSE]
+
+data_filtered_female <- DGEList(counts = counts_samples_female, genes = gene_info,  group = final_metadata_female$Disorder)
+keep <- filterByExpr(data_filtered_female)
+data_filtered_female <- data_filtered_female[keep, , keep.lib.sizes=FALSE]
+```
+
+Normalise count data
+
+```{r}
+data_filtered <- calcNormFactors(data_filtered)
+data_filtered_male <- calcNormFactors(data_filtered_male)
+data_filtered_female <- calcNormFactors(data_filtered_female)
+
+data_normalised <- cpm(data_filtered, log = T, prior.count = 0.5)
+data_normalised_male <- cpm(data_filtered_male, log = T, prior.count = 0.5)
+data_normalised_female <- cpm(data_filtered_female, log = T, prior.count = 0.5)
+```
+
