@@ -13,6 +13,7 @@ library(ggplot2)
 library(reshape2)
 library(tibble)
 library(edgeR)
+library(xCell)
 ```
 
 -------------------
@@ -347,6 +348,143 @@ voom_fit_f_sens <- eBayes(voom_fit_f_sens)
 biodep_tt_sens_f <- topTable(voom_fit_f_sens, coef = "disorderMDD", number = nrow(data_filtered_sens_f))
 results_f_sens <- decideTests(voom_fit_f_sens)
 summary(results_f_sens)
+```
+
+--------------------------------------------------------------
+xCell correction for comparison with original cell count data
+--------------------------------------------------------------
+
+Loading data for xCell analysis
+
+```{r}
+pooled_counts <- data_filtered[['counts']] %>% as.data.frame()
+```
+
+10,808 gene overlap check, at least 5000 recommended.
+
+```{r}
+load("../../../../ensembl_GRCh38_v84.Rdata")
+att <- c("external_gene_name", "ensembl_gene_id", "chromosome_name")
+gene_info <- getBM(attributes = att, mart = ensembl)
+
+xcell_genes <- xCell.data$genes %>% as.data.frame() %>% setNames("gene_name")
+pooled_genes <- rownames(pooled_counts) %>% as.data.frame() %>% setNames("ensembl_gene_id") %>% merge(., gene_info, by = "ensembl_gene_id")
+
+venn.diagram(list(Pooled = pooled_genes$external_gene_name, xCell = xcell_genes$gene_name), filename = "overlap_10808_genes.tiff") 
+```
+
+
+```{r}
+library(ensembldb)
+library(EnsDb.Hsapiens.v86)
+edb <- EnsDb.Hsapiens.v86
+```
+
+
+```{r}
+gene_lengths <- lengthOf(edb, of = "gene")
+gene_lengths <- as.data.frame(gene_lengths) %>% rownames_to_column("ensembl_gene_id")
+
+gene_len_pooled <- pooled_genes %>% merge(., gene_lengths, by = "ensembl_gene_id", all.x = T)
+
+
+chr_names <- c(as.character(paste(seq(1,22,1), sep = ",")),"X", "Y", "MT")
+gene_len_pooled_2 <- gene_len_pooled %>% dplyr::filter(chromosome_name %in% chr_names) 
+setdiff(gene_len_pooled$ensembl_gene_id, gene_len_pooled_2$ensembl_gene_id)#13
+
+gene_len_pooled_3 <- gene_len_pooled_2 %>% dplyr::filter(is.na(gene_lengths) == F)
+
+detach(package:EnsDb.Hsapiens.v86)
+detach(package:ensembldb)
+```
+
+
+modify male and female count matrix - gene subset
+```{r}
+count_samples_sub <- pooled_counts %>% rownames_to_column("ensembl_gene_id") %>% merge(., gene_len_pooled_3, by = "ensembl_gene_id", sort = F) %>% mutate(gene_name = make.unique(external_gene_name, sep = "_")) 
+gl_pooled <- count_samples_sub %>% dplyr::select(gene_name, gene_lengths)
+count_samples_sub <- count_samples_sub %>% column_to_rownames("gene_name")
+
+final_metadata_pooled <- imputed_metadata %>% mutate(Disorder = as.factor(disorder))
+identical(final_metadata_pooled$sample_id_match, colnames(count_samples_sub))
+
+count_samples_sub <- count_samples_sub %>% dplyr::select(one_of(dput(as.character(final_metadata_pooled$sample_id_match))))
+
+```
+
+```{r}
+data_filtered_sub <- DGEList(counts = count_samples_sub, group = final_metadata_pooled$Disorder)
+
+data_filtered_sub <- calcNormFactors(data_filtered_sub)
+data_filtered_sub$samples
+```
+
+RPKM find
+
+```{r}
+
+RPKM_pooled <- rpkm(data_filtered_sub, gene.length = gl_pooled$gene_lengths)
+
+```
+
+TPM calculate (TMM normalised - at RPKM stage)
+
+```{r}
+
+TPM_pooled <- t( t(RPKM_pooled) / colSums(RPKM_pooled) ) * 1e6
+
+```
+
+xCell calculation
+
+```{r}
+cellchoice_broad <- c("B-cells", "CD4+ T-cells", "CD8+ T-cells", "Monocytes", "NK cells") 
+
+set.seed(13005)
+xcellout_broad <- xCellAnalysis(expr=TPM_pooled, genes=rownames(TPM_pooled),rnaseq=TRUE, cell.types.use=cellchoice_broad)
+
+```
+
+### xCell stats
+
+#significance
+```{r}
+set.seed(13005)
+# Significance testing for whether cell types are likely present in the mixture
+tmp <- xCellSignifcanceBetaDist(xcellout_broad, rnaseq=TRUE)
+# Only keep a cell type if there is evidence (p<0.05) for presence of the cell type in at least 30% samples (arbitrary)
+toselect <- apply(tmp,1,function(x){sum(x<0.1)}>=64)
+toselect %>% table 
+xcellsmall_broad <- xcellout_broad[toselect,]
+ypos_broad <- apply(xcellsmall_broad, 1, function(x){1.3*max(x)})
+
+```
+
+Final values to correct for
+
+```{r}
+cc_broad_pooled <- xcellsmall_broad %>% t() %>% as.data.frame() %>% rownames_to_column ("sample_id")
+```
+
+```{r}
+orig_cc <- final_metadata %>% mutate(monocytes = macs_mono_class_of_total + macs_mono_int_of_total + macs_mono_nonclass_of_total) %>% dplyr::select(sample_id_match, macs_b_of_total:macs_cd8_of_total, monocytes, macs_nk_of_total)
+
+identical(cc_broad_pooled$sample_id, orig_cc$sample_id_match)
+
+```
+
+Correlation
+
+```{r}
+cor_pooled <- rcorr(x = as.matrix(orig_cc[,-1]), y = as.matrix(cc_broad_pooled[,-1]), type = "spearman")
+
+library(corrplot)
+
+pdf("correlation_broads.pdf")
+corrplot(corr = cor_pooled$r[1:5, 6:10], method = "square", title = "Pooled - BIODEP", p.mat = cor_pooled$P[1:5, 6:10], sig.level = 0.05, insig = "blank", mar = c(0,0,1,0), addCoef.col = "black")
+dev.off()
+
+
 ```
 
 
