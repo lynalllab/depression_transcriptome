@@ -14,6 +14,7 @@ library(reshape2)
 library(tibble)
 library(limma)
 library(xCell)
+library(corrplot)
 ```
 
 -------------------
@@ -286,5 +287,20 @@ dbgap_tt_sens_p_pooled <- topTable(fit_sens_p, coef = "DisorderMDD", number = 45
 dbgap_tt_sens_p_f <- topTable(fit_sens_p_f, coef = "DisorderMDD", number = 45485)
 dbgap_tt_sens_p_m <- topTable(fit_sens_p_m, coef = "DisorderMDD", number = 45485)
 
+```
+
+```{r}
+orig_cc <- blood_data %>% mutate(lymphocytes = lympn, basophils = bason, eosinophils = eosn, neutrophils = neutn, monocytes = monon, sample_id_match = paste("X", SAMPID, sep ="")) %>% dplyr::select(sample_id_match,lymphocytes:monocytes) %>% filter(sample_id_match %in% cc_metadata$sample_id_match) #original cell count data
+xcell_cc <- cc_mono %>% filter(X %in% cc_metadata$sample_id_match) #xcell generated cell count data
+
+identical(xcell_cc$X, orig_cc$sample_id_match)
+
+cor_cc <- rcorr(x = as.matrix(orig_cc[,-c(1,6)]), y = as.matrix(xcell_cc[,c(7:10)]), type = "spearman")
+cor_cc_mono <- rcorr(x = as.matrix(orig_cc[,-1]), y = as.matrix(xcell_cc[,c(5, 7:10)]), type = "spearman")
+
+pdf("correlation_cc_xcell_orig.pdf")
+corrplot(corr = cor_cc$r[1:4, 5:8], method = "square", title = "dbGaP", p.mat = cor_cc$P[1:4,5:8], sig.level = 0.05, insig = "blank", mar = c(1,1,1,1), addCoef.col = "black")
+corrplot(corr = cor_cc_mono$r[c(1:3,5,4), c(10,7,8,6,9)], method = "square", title = "dbGaP (with Monocytes)", p.mat = cor_cc_mono$P[c(1:3,5,4), c(10,7,8,6,9)], sig.level = 0.05, insig = "blank", mar = c(1,1,1,1), addCoef.col = "black", tl.cex = 1, number.cex = 1.3)
+dev.off()
 ```
 
