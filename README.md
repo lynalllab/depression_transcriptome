@@ -48,10 +48,11 @@ Authors: Chaitanya Erady, Richard A.I. Bethlehem, Ed Bullmore, Mary-Ellen Lynall
 * __consensus_clustering_control_samples_only.Rmd__ Conducts consensus WGCNA for CNT samples only
 * __WGCNA_module_exploration.Rmd__ Codes for analysis of module enrichment, module preservation scores, module-trait association, module-disorder association, identify hub genes, module membership of DGE genes, inter-dataset correlations, module-smoking association, leave-one-out analysis: without dbGaP, calculate average weighted cohensd, Figures 6A, S10, S11, Data for Tables S4, S5, S6 and S7
 * __wgcna_cohensd.Rmd__ Makes WGCNA meta-analysis plots, Figures 3C,D
-* 
+
 
 ## Processing additional MDD case-control datasets
-To meta-analyse additional MDD case-control datasets, see steps listed for BIODEP/Le/Mostafavi data processing if using RNA-Seq data, else see steps listed for dbGaP/HiTDiP data processing if using microarray data. Then use meta_analysis_with_bias_and_inflation_correction.Rmd to conduct the meta-analysis.
-Templates to conduct DTE (template_for_DTE.Rmd) and DTU (template_for_DTU.Rmd) analysis are also provided. 
-Gene-, transcript-level summary statistics and harmonised processed individual-level count matrices along with estimated cell counts and metadata are provided (where permitted) at the Zenodo repository https://doi.org/10.5281/zenodo.15290507. 
+* To meta-analyse additional MDD case-control datasets, see steps listed for BIODEP/Le/Mostafavi data processing if using RNA-Seq data, else see steps listed for dbGaP/HiTDiP data processing if using microarray data.
+* Use meta_analysis_with_bias_and_inflation_correction.Rmd to conduct meta-analysis of processed datasets.
+* Use template_for_DTE.Rmd and template_for_DTU.Rmd, respectively, to conduct DTE and DTU analysis.
+* Gene-, transcript-level summary statistics and harmonised processed individual-level count matrices along with estimated cell counts and metadata are provided (where permitted) at the Zenodo repository https://doi.org/10.5281/zenodo.15290507. 
 
